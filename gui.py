@@ -369,7 +369,13 @@ nmap_textbox.pack(fill="both", expand=True, padx=10, pady=10)
 start_nmap_button = tk.Button(nmap_tab, text="Start Nmap Scan", command=lambda: run_nmap_scan(nmap_url_entry.get().strip(), nmap_scan_type_var.get()))
 start_nmap_button.pack(pady=10)
 
+# Button to stop Nmap scan
+stop_nmap_button = tk.Button(nmap_tab, text="Stop Nmap Scan", command=stop_nmap_scan, state=tk.DISABLED)
+stop_nmap_button.pack(pady=10)
 
+# Button to export Nmap results
+export_nmap_button = tk.Button(nmap_tab, text="Export Nmap Results", command=export_nmap_results)
+export_nmap_button.pack(pady=10)
 
 # Queue for thread-safe communication
 output_queue = queue.Queue()
