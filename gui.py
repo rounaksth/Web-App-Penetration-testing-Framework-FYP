@@ -172,7 +172,7 @@ def run_nmap_scan(target_url, scan_type):
     # Clear previous results
     nmap_textbox.delete("1.0", tk.END)
 
-    # Define Nmap commands based on scan type
+    # Define Nmap commands based on scan type-----types
     if scan_type == "Quick Scan":
         command = ["nmap", "-T4", "-F", target_url]
     elif scan_type == "Full Scan":
