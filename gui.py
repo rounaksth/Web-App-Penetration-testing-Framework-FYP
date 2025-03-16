@@ -8,9 +8,12 @@ import os
 import queue
 from datetime import datetime
 import logging
+import signal
+import time 
 
 # Global variable to track the running process
 running_process = None
+process_lock = threading.Lock()  # Lock for synchronizing access to running_process
 
 # Configure logging
 logging.basicConfig(filename="app.log", level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -95,9 +98,30 @@ def start_testing():
     progress_bar.start()
 
     try:
-        running_process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        # Start the process
+        with process_lock:
+            running_process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+        # Wait for the PID file to be created
+        pid_file = "pentest.pid"
+        start_time = time.time()
+        while not os.path.exists(pid_file) and (time.time() - start_time) < 5:  # Wait up to 5 seconds
+            time.sleep(0.1)
+
+        if not os.path.exists(pid_file):
+            messagebox.showerror("Error", "Failed to start the scan. PID file not created.")
+            progress_bar.stop()
+            start_button.config(state=tk.NORMAL)
+            stop_button.config(state=tk.DISABLED)
+            return
 
         def read_output():
+            global running_process
+
+            with process_lock:
+                if running_process is None:
+                    return #Exit it running_process is NONE
+
             for line in iter(running_process.stdout.readline, ''):
                 if line:
                     output_queue.put(line.strip())
@@ -110,11 +134,20 @@ def start_testing():
             start_button.config(state=tk.NORMAL)
             stop_button.config(state=tk.DISABLED)
 
-            if running_process.returncode == 0:
-                messagebox.showinfo("Scan Completed", "Penetration Testing completed successfully!")
-            else:
-                error_message = running_process.stderr.read().strip()
-                messagebox.showerror("Error", f"Scan failed: {error_message}")
+            # Check if running_process is still valid
+            with process_lock:
+                if running_process is not None:
+                    if running_process.returncode == 0:
+                        messagebox.showinfo("Scan Completed", "Penetration Testing completed successfully!")
+
+                    else:
+                        error_message = running_process.stderr.read().strip()
+                        messagebox.showerror("Error", f"Scan failed: {error_message}")
+
+            # Clean up the PID file
+            pid_file = "pentest.pid"
+            if os.path.exists(pid_file):
+                os.remove(pid_file)
 
         # Start processing output in a separate thread
         threading.Thread(target=read_output, daemon=True).start()
@@ -131,14 +164,46 @@ def start_testing():
 def stop_scan():
     global running_process
 
-    if running_process:
-        running_process.terminate()  # Terminate the process
-        running_process = None  # Reset the running_process variable
-        progress_bar.stop()
-        messagebox.showinfo("Scan Stopped", "The scan has been stopped.")
-        start_button.config(state=tk.NORMAL)
-        stop_button.config(state=tk.DISABLED)
+    # Check if the PID file exists
+    pid_file = "pentest.pid"
+    if os.path.exists(pid_file):
+        try:
+            # Read the PID from the file
+            with open(pid_file, "r") as f:
+                pid = int(f.read().strip())
 
+            # Send SIGTERM to stop the process
+            os.kill(pid, signal.SIGTERM)
+            print(f"Sent SIGTERM to process {pid}.")
+
+            # Clean up
+            with process_lock:
+                if running_process:
+                    running_process.terminate()  # Terminate the subprocess
+                    running_process.wait()  # Wait for the process to fully terminate
+
+            # Stop the progress bar and update GUI
+            progress_bar.stop()
+            messagebox.showinfo("Scan Stopped", "The scan has been stopped.")
+            start_button.config(state=tk.NORMAL)
+            stop_button.config(state=tk.DISABLED)
+
+            # Remove the PID file
+            os.remove(pid_file)
+        except ProcessLookupError:
+            print("Process not found. It may have already completed.")
+            if os.path.exists(pid_file):
+                os.remove(pid_file)  # Clean up the PID file
+        except Exception as e:
+            print(f"Error stopping the scan: {e}")
+    else:
+        print("No scan is running.")
+        messagebox.showinfo("Scan Status", "No scan is currently running.")
+
+    # Reset running_process after cleanup
+    with process_lock:
+        running_process = None
+    
 # Function to process the output queue
 def process_queue():
     try:
