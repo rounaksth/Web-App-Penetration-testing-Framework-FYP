@@ -13,7 +13,8 @@ import time
 
 # Global variable to track the running process
 running_process = None
-process_lock = threading.Lock()  # Lock for synchronizing access to running_process
+nmap_process = None
+process_lock = threading.Lock()  # Lock for synchronizing access to running_process and nmap_process
 
 # Configure logging
 logging.basicConfig(filename="app.log", level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -67,7 +68,7 @@ def contact_support():
 
 # Function to start penetration testing
 def start_testing():
-    global running_process  # Declare running_process as global
+    global running_process, nmap_process  # Declare running_process as global
 
     target_url = url_entry.get().strip()
     scan_type = scan_type_var.get()
@@ -101,6 +102,7 @@ def start_testing():
         # Start the process
         with process_lock:
             running_process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            nmap_process = running_process #Assign running_process to nmap_process---
 
         # Wait for the PID file to be created
         pid_file = "pentest.pid"
@@ -116,7 +118,7 @@ def start_testing():
             return
 
         def read_output():
-            global running_process
+            global running_process, nmap_process  
 
             with process_lock:
                 if running_process is None:
@@ -162,7 +164,7 @@ def start_testing():
 
 # Function to stop the scan
 def stop_scan():
-    global running_process
+    global running_process, nmap_process
 
     # Check if the PID file exists
     pid_file = "pentest.pid"
@@ -181,6 +183,9 @@ def stop_scan():
                 if running_process:
                     running_process.terminate()  # Terminate the subprocess
                     running_process.wait()  # Wait for the process to fully terminate
+                if nmap_process:
+                    nmap_process.terminate() #Terminate the nmap process
+                    nmap_process.wait() #Wait for the process to fully terminate
 
             # Stop the progress bar and update GUI
             progress_bar.stop()
@@ -197,12 +202,17 @@ def stop_scan():
         except Exception as e:
             print(f"Error stopping the scan: {e}")
     else:
+        # If the PID file doesn't exist, assume the scan is already stopped
         print("No scan is running.")
+        progress_bar.stop()
         messagebox.showinfo("Scan Status", "No scan is currently running.")
+        start_button.config(state=tk.NORMAL)
+        stop_button.config(state=tk.DISABLED)
 
     # Reset running_process after cleanup
     with process_lock:
         running_process = None
+        nmap_process = None
     
 # Function to process the output queue
 def process_queue():
@@ -261,26 +271,36 @@ def run_nmap_scan(target_url, scan_type):
     nmap_process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
     # Function to read and display real-time output
+
     def read_output():
+        global nmap_process
+
         while True:
+            with process_lock:
+                if nmap_process is None:
+                    break
+
             output = nmap_process.stdout.readline()
             if output == '' and nmap_process.poll() is not None:
                 break
             if output:
                 nmap_textbox.insert(tk.END, output)
                 nmap_textbox.see(tk.END)  # Scroll to the end
-        nmap_process.stdout.close()
-        nmap_process.wait()
+        with process_lock:
+            if nmap_process is not None:
+                nmap_process.stdout.close()
+                nmap_process.wait()
 
         # Re-enable the Start button and disable the Stop button
         start_nmap_button.config(state=tk.NORMAL)
         stop_nmap_button.config(state=tk.DISABLED)
 
-        if nmap_process.returncode == 0:
-            nmap_textbox.insert(tk.END, "\nNmap scan completed successfully!\n")
-        else:
-            error = nmap_process.stderr.read()
-            nmap_textbox.insert(tk.END, f"\nError: {error}\n")
+        with process_lock:
+            if nmap_process is not None and nmap_process.returncode == 0:
+                nmap_textbox.insert(tk.END, "\nNmap scan completed successfully!\n")
+            else:
+                error = nmap_process.stderr.read() if nmap_process else "Nmap process was not started."
+                nmap_textbox.insert(tk.END, f"\nError: {error}\n")
 
     # Start reading output in a separate thread
     threading.Thread(target=read_output, daemon=True).start()
