@@ -10,6 +10,7 @@ from datetime import datetime
 import logging
 import signal
 import time 
+from tkinter import simpledialog
 
 # Global variable to track the running process
 running_process = None
@@ -258,6 +259,18 @@ def run_nmap_scan(target_url, scan_type):
             messagebox.showerror("Error", "OS Detection requires root privileges. Please run the application as root or use 'sudo'.")
             return
         command = ["nmap", "-T4", "-O", target_url]
+    elif scan_type == "Service Version Detection":
+        command = ["nmap", "-T4", "-sV", target_url]
+    elif scan_type == "Script Scan":
+        command = ["nmap", "-T4", "-sC", target_url]
+    elif scan_type == "Vulnerability Scan":
+        command = ["nmap", "-T4", "--script", "vuln", target_url]
+    elif scan_type == "Custom Scan":
+        custom_options = simpledialog.askstring("Custom Scan", "Enter Nmap options (e.g., -sV -O -p 80):")
+        if not custom_options:
+            messagebox.showerror("Error", "No custome options provided.")
+            return
+        command = ["nmap"] + custom_options.split(), [target_url]
     else:
         messagebox.showerror("Error", "Invalid scan type selected.")
         return
@@ -442,7 +455,7 @@ nmap_clear_button = tk.Button(nmap_url_frame, text="Clear", command=lambda: nmap
 nmap_clear_button.pack(side="left", padx=10)
 
 # Dropdown for Nmap scan types
-nmap_scan_types = ["Quick Scan", "Full Scan", "OS Detection"]
+nmap_scan_types = ["Quick Scan", "Full Scan", "OS Detection", "Service Version Detection", "Script Scan","Vulnerablity Scan", "Custom Scan"]
 nmap_scan_type_var = tk.StringVar(value=nmap_scan_types[0])
 nmap_scan_dropdown = ttk.Combobox(nmap_url_frame, textvariable=nmap_scan_type_var, values=nmap_scan_types, state="readonly")
 nmap_scan_dropdown.pack(side="left", padx=10)
