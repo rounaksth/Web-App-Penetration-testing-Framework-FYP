@@ -227,7 +227,8 @@ def process_queue():
                 if len(columns) == 3:
                     result_table.insert("", "end", values=columns)
                 else:
-                    logging.warning(f"Skipping malformed line: {line}")
+                    result_table.insert("", "end", values=(line, "Unknown", "Check log"))
+                    
             except Exception as e:
                 logging.error(f"Error parsing line: {line}. Error: {e}")
     except queue.Empty:
@@ -264,7 +265,7 @@ def run_nmap_scan(target_url, scan_type):
     elif scan_type == "Script Scan":
         command = ["nmap", "-T4", "-sC", target_url]
     elif scan_type == "Vulnerability Scan":
-        command = ["nmap", "-T4", "--script", "vuln", target_url]
+        command = ["nmap", "-sV", "--script", "vulners.nse", "-T4", target_url]
     elif scan_type == "Custom Scan":
         custom_options = simpledialog.askstring("Custom Scan", "Enter Nmap options (e.g., -sV -O -p 80):")
         if not custom_options:
@@ -455,7 +456,7 @@ nmap_clear_button = tk.Button(nmap_url_frame, text="Clear", command=lambda: nmap
 nmap_clear_button.pack(side="left", padx=10)
 
 # Dropdown for Nmap scan types
-nmap_scan_types = ["Quick Scan", "Full Scan", "OS Detection", "Service Version Detection", "Script Scan","Vulnerablity Scan", "Custom Scan"]
+nmap_scan_types = ["Quick Scan", "Full Scan", "OS Detection", "Service Version Detection", "Script Scan","Vulnerability Scan", "Custom Scan"]
 nmap_scan_type_var = tk.StringVar(value=nmap_scan_types[0])
 nmap_scan_dropdown = ttk.Combobox(nmap_url_frame, textvariable=nmap_scan_type_var, values=nmap_scan_types, state="readonly")
 nmap_scan_dropdown.pack(side="left", padx=10)
