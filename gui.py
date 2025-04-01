@@ -264,6 +264,8 @@ def run_nmap_scan(target_url, scan_type):
         command = ["nmap", "-T4", "-sV", target_url]
     elif scan_type == "Script Scan":
         command = ["nmap", "-T4", "-sC", target_url]
+    elif scan_type == "VS":
+        command = ["nmap", "-sV", "--script", "http-vuln*", "-T4", target_url]
     elif scan_type == "Vulnerability Scan":
         command = ["nmap", "-sV", "--script", "vulners.nse", "-T4", target_url]
     elif scan_type == "Custom Scan":
@@ -271,7 +273,7 @@ def run_nmap_scan(target_url, scan_type):
         if not custom_options:
             messagebox.showerror("Error", "No custome options provided.")
             return
-        command = ["nmap"] + custom_options.split(), [target_url]
+        command = ["nmap"] + custom_options.split() + [target_url]
     else:
         messagebox.showerror("Error", "Invalid scan type selected.")
         return
@@ -312,12 +314,37 @@ def run_nmap_scan(target_url, scan_type):
         with process_lock:
             if nmap_process is not None and nmap_process.returncode == 0:
                 nmap_textbox.insert(tk.END, "\nNmap scan completed successfully!\n")
+                
             else:
                 error = nmap_process.stderr.read() if nmap_process else "Nmap process was not started."
                 nmap_textbox.insert(tk.END, f"\nError: {error}\n")
 
     # Start reading output in a separate thread
     threading.Thread(target=read_output, daemon=True).start()
+
+def auto_exploit():
+    # Assuming vulnerabilities are found, run the exploit script
+    try:
+        exploit_script = "./exploit.sh"
+        if os.path.exists(exploit_script):
+            
+            exploit_process = subprocess.Popen([exploit_script], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+            # Read and display output from exploit script
+            def read_exploit_output():
+                for line in iter(exploit_process.stdout.readline, ''):
+                    if line:
+                        nmap_textbox.insert(tk.END, line.strip())  # Output exploit script result in textbox
+                        nmap_textbox.see(tk.END)
+
+            threading.Thread(target=read_exploit_output, daemon=True).start()
+
+        else:
+            messagebox.showerror("Error", "Exploit script not found. Ensure 'exploit.sh' is in the same directory.")
+    except Exception as e:
+        logging.error(f"Error in exploit: {str(e)}")
+        messagebox.showerror("Error", f"Error executing exploit: {str(e)}")
+   
 
 # Function to stop Nmap scan
 def stop_nmap_scan():
@@ -387,7 +414,7 @@ url_entry.grid(row=0, column=1, padx=10, pady=5)
 url_entry.insert(0, "Enter target URL here")
 url_entry.bind("<FocusIn>", on_url_entry_click)
 clear_button = tk.Button(input_frame, text="Clear", command=lambda: url_entry.delete(0, tk.END))
-clear_button.grid(row=1, column=1, padx=10, pady=5, sticky="w")
+clear_button.grid(row=0, column=2, padx=10, pady=5)
 
 # Scan Controls Section
 scan_frame = tk.Frame(existing_tab)
@@ -408,27 +435,27 @@ timeout_spinbox = tk.Spinbox(scan_frame, from_=1, to=60, width=5)
 timeout_spinbox.grid(row=2, column=1, padx=10, pady=5)
 
 # Start Scan Button
-start_button = tk.Button(existing_tab, text="Start Scan", command=start_testing)
-start_button.pack(pady=10)
+start_button = tk.Button(input_frame, text="Start Scan", command=start_testing)
+start_button.grid(row=1, column=0, padx=10, pady=5)
 
 # Stop Scan Button
-stop_button = tk.Button(existing_tab, text="Stop Scan", command=stop_scan, state=tk.DISABLED)
-stop_button.pack(pady=10)
+stop_button = tk.Button(input_frame, text="Stop Scan", command=stop_scan, state=tk.DISABLED)
+stop_button.grid(row=1, column=1, padx=10, pady=5)
 
 # Progress Bar
-progress_bar = ttk.Progressbar(existing_tab, orient="horizontal", length=300, mode="indeterminate")
-progress_bar.pack(pady=20)
+progress_bar = ttk.Progressbar(input_frame, orient="horizontal", length=300, mode="indeterminate")
+progress_bar.grid(row=1, column=2, padx=10, pady=5)
 
 # Results Section
 results_frame = tk.Frame(existing_tab)
 results_frame.pack(pady=20)
 result_label = tk.Label(results_frame, text="Scan Results:")
 result_label.grid(row=0, column=0, padx=10, pady=5)
-result_table = ttk.Treeview(results_frame, columns=("Vulnerability", "Severity", "Action"), show="headings")
-result_table.heading("Vulnerability", text="Vulnerability")
-result_table.heading("Severity", text="Severity")
-result_table.heading("Action", text="Action")
-result_table.grid(row=1, column=0, padx=10, pady=5)
+result_table = ttk.Treeview(existing_tab, columns=("Vulnerability", "Severity", "Action"))
+result_table.heading("#1", text="Vulnerability")
+result_table.heading("#2", text="Severity")
+result_table.heading("#3", text="Action")
+result_table.pack(fill="both", expand=True)
 
 # Footer Section
 footer_frame = tk.Frame(existing_tab)
@@ -456,13 +483,18 @@ nmap_clear_button = tk.Button(nmap_url_frame, text="Clear", command=lambda: nmap
 nmap_clear_button.pack(side="left", padx=10)
 
 # Dropdown for Nmap scan types
-nmap_scan_types = ["Quick Scan", "Full Scan", "OS Detection", "Service Version Detection", "Script Scan","Vulnerability Scan", "Custom Scan"]
+nmap_scan_types = ["Quick Scan", "Full Scan", "OS Detection", "Service Version Detection", "Script Scan","VS", "Vulnerability Scan", "Custom Scan"]
 nmap_scan_type_var = tk.StringVar(value=nmap_scan_types[0])
 nmap_scan_dropdown = ttk.Combobox(nmap_url_frame, textvariable=nmap_scan_type_var, values=nmap_scan_types, state="readonly")
 nmap_scan_dropdown.pack(side="left", padx=10)
 
 nmap_textbox = tk.Text(nmap_tab, wrap=tk.WORD, height=20, width=80)
 nmap_textbox.pack(fill="both", expand=True, padx=10, pady=10)
+
+# Button to Start Exploit
+automate_button = tk.Button(nmap_tab, text="Automate", command=auto_exploit)
+automate_button.pack(side= "left", pady=10)
+
 
 # Button to start Nmap scan
 start_nmap_button = tk.Button(nmap_tab, text="Start Nmap Scan", command=lambda: run_nmap_scan(nmap_url_entry.get().strip(), nmap_scan_type_var.get()))
