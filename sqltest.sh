@@ -1,0 +1,145 @@
+#!/bin/bash
+
+# Accepting user inputs
+TARGET_URL="$1"
+SCAN_TYPE="$2"
+SCAN_DEPTH="$3"
+TIMEOUT="$4"
+COOKIE="$5"  # Optional cookie input
+
+# Log file for errors and debugging
+LOG_FILE="pentest.log"
+PID_FILE="pentest.pid"
+
+# Rotate log file if it exceeds 10MB
+LOG_SIZE=$(stat -c%s "$LOG_FILE" 2>/dev/null || echo 0)
+if [[ "$LOG_SIZE" -gt 10485760 ]]; then
+    mv "$LOG_FILE" "${LOG_FILE}.old"
+    echo "Rotated log file." | tee -a "$LOG_FILE"
+fi
+
+echo "Starting scan at $(date)" > "$LOG_FILE"
+
+# Save the script's PID to a file
+echo $$ > "$PID_FILE"
+echo "PID file created with PID: $$" | tee -a "$LOG_FILE"
+
+# Function to clean up on exit
+cleanup() {
+    echo "Cleaning up..." | tee -a "$LOG_FILE"
+    # Kill all child processes
+    pkill -P $$  # Kill all processes spawned by this script
+    rm -f "$PID_FILE"  # Remove the PID file
+    rm -f temp_*.txt
+    exit 0
+}
+
+# Trap SIGTERM and SIGINT to clean up
+trap cleanup SIGTERM SIGINT
+
+# Function to check if a command is installed
+check_command() {
+    if ! command -v "$1" &> /dev/null; then
+        echo "Error: $1 is not installed. Please install it and try again." | tee -a "$LOG_FILE"
+        cleanup
+    fi
+}
+
+# Function to perform SQL Injection Scan
+perform_sqli_scan() {
+    echo "SQL Injection Scan in progress..." | tee -a "$LOG_FILE"
+    check_command "sqlmap"
+
+    # Base Command
+    command=("sqlmap" "-u" "$TARGET_URL" "--batch" "--level=$SCAN_DEPTH" "--timeout=$TIMEOUT" "--risk=3")
+
+    # Advanced Options (based on SCAN_DEPTH)
+    if [[ "$SCAN_DEPTH" -ge 2 ]]; then
+        command+=("--dbs")  # Enumerate databases
+    fi
+    if [[ "$SCAN_DEPTH" -ge 3 ]]; then
+        command+=("--tables")  # Enumerate tables
+    fi
+    if [[ "$SCAN_DEPTH" -ge 4 ]]; then
+        command+=("--columns")  # Enumerate columns
+    fi
+    if [[ "$SCAN_DEPTH" -ge 5 ]]; then
+        command+=("--dump")  # Dump database entries
+    fi
+
+    # Additional options for speed and efficiency
+    command+=("--technique=BEUSTQ")  # Use all injection techniques
+    command+=("--tamper=space2comment")  # Use tampering script to bypass WAFs
+    command+=("--crawl=1")  # Limit crawling to 1 level
+    command+=("--forms")  # Test forms for SQLi
+    command+=("--threads=5")  # Increase threads for faster scanning
+    command+=("--skip=generic,heavy")  # Skip generic and heavy tests
+    command+=("-v 3")  # Verbose output for monitoring progress
+
+    # Include cookie if provided
+    if [[ -n "$COOKIE" ]]; then
+        command+=("--cookie=$COOKIE")
+    fi
+
+    # Run the command with progress indicator and error handling
+    echo "Running command: ${command[*]}" | tee -a "$LOG_FILE"
+    {
+        echo "=== SQL Injection Scan Results ===" > output_sqli.txt
+        echo "Target: $TARGET_URL" >> output_sqli.txt
+        echo "Started at: $(date)" >> output_sqli.txt
+        "${command[@]}" | tee -a output_sqli.txt &
+        PID=$!
+        while ps -p $PID > /dev/null; do
+            echo -n "."
+            sleep 5
+        done
+        echo -e "\nScan completed."
+        echo "Ended at: $(date)" >> output_sqli.txt
+    }
+
+    # Check for errors
+    if grep -q "ERROR" output_sqli.txt; then
+        echo "Error: SQLi scan encountered issues. Check output_sqli.txt for details." | tee -a "$LOG_FILE"
+    else
+        echo "SQL Injection Scan|High|Use prepared statements" | tee -a "$LOG_FILE"
+    fi
+}
+
+# Function to perform XSS Scan
+perform_xss_scan() {
+    echo "XSS Scan in progress..." | tee -a "$LOG_FILE"
+    check_command "xsstrike"
+
+    {
+        echo "=== XSS Scan Results ===" > output_xss.txt
+        echo "Target: $TARGET_URL" >> output_xss.txt
+        echo "Started at: $(date)" >> output_xss.txt
+        xsstrike -u "$TARGET_URL" --crawl --timeout "$TIMEOUT" | tee -a output_xss.txt
+        echo "Ended at: $(date)" >> output_xss.txt
+    }
+
+    if grep -q "Vulnerable" output_xss.txt; then
+        echo "Cross-Site Scripting|Medium|Implement CSP & input validation" | tee -a "$LOG_FILE"
+    else
+        echo "No XSS vulnerabilities found." | tee -a "$LOG_FILE"
+    fi
+}
+
+# Function to perform a comprehensive scan
+perform_comprehensive_scan() {
+    echo "Running Comprehensive Scan..." | tee -a "$LOG_FILE"
+    perform_sqli_scan
+    perform_xss_scan
+    # Add Nmap scan or other scans here if needed
+}
+
+# Select the appropriate scan type
+case "$SCAN_TYPE" in
+    "SQLi") perform_sqli_scan ;;
+    "XSS") perform_xss_scan ;;
+    "Comprehensive") perform_comprehensive_scan ;;
+    *) echo "Invalid Scan Type. Use SQLi, XSS, or Comprehensive." | tee -a "$LOG_FILE" ;;
+esac
+
+# Cleanup temporary files
+cleanup
