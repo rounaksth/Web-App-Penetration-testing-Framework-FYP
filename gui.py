@@ -120,15 +120,33 @@ def start_testing():
 
         def read_output():
             global running_process, nmap_process  
+            output_file = "output_sqli.txt" if scan_type == "SQLi" else None
 
-            with process_lock:
-                if running_process is None:
-                    return #Exit it running_process is NONE
+            if output_file:
+                # Wait for the output file to be created
+                while not os.path.exists(output_file) and running_process.poll() is None:
+                    time.sleep(0.5)
 
-            for line in iter(running_process.stdout.readline, ''):
-                if line:
-                    output_queue.put(line.strip())
-            running_process.stdout.close()
+                if os.path.exists(output_file):
+                    with open(output_file, "r") as f:
+                        f.seek(0, os.SEEK_END)  # Go to end of file
+                        while running_process.poll() is None:  # While process is running
+                            line = f.readline()
+                            if line:
+                                output_queue.put(line.strip())
+                            time.sleep(0.5)
+                        # Read final lines after process ends
+                        while True:
+                            line = f.readline()
+                            if not line:
+                                break
+                            output_queue.put(line.strip())
+            else:
+            # Fallback to stdout for non-SQLi scans
+                for line in iter(running_process.stdout.readline, ''):
+                    if line:
+                        output_queue.put(line.strip())
+                running_process.stdout.close()
             running_process.wait()
 
             progress_bar.stop()
@@ -222,15 +240,12 @@ def process_queue():
             line = output_queue.get_nowait()
             if line is None:
                 break
-            try:
-                columns = line.split("|")
-                if len(columns) == 3:
-                    result_table.insert("", "end", values=columns)
-                else:
-                    result_table.insert("", "end", values=(line, "Unknown", "Check log"))
-                    
-            except Exception as e:
-                logging.error(f"Error parsing line: {line}. Error: {e}")
+            # Only process lines with exactly 3 columns separated by "|"
+            columns = line.split("|")
+            if len(columns) == 3 and "SQL Injection" in columns[0]:  # Filter for SQLi results
+                # Clear previous entries to ensure only one result
+                result_table.delete(*result_table.get_children())
+                result_table.insert("", "end", values=(columns[0], columns[1], columns[2]))
     except queue.Empty:
         pass
     root.after(100, process_queue)
@@ -300,7 +315,7 @@ def run_nmap_scan(target_url, scan_type):
             if output == '' and nmap_process.poll() is not None:
                 break
             if output:
-                nmap_textbox.insert(tk.END, output)
+                nmap_textbox.insert(tk.END, output, "green_text") # Insert with green_text tag
                 nmap_textbox.see(tk.END)  # Scroll to the end
         with process_lock:
             if nmap_process is not None:
@@ -328,6 +343,9 @@ def auto_exploit():
         exploit_script = "./exploit.sh"
         if os.path.exists(exploit_script):
             
+            # Add a header for the exploit section
+            nmap_textbox.insert(tk.END, "\n----- STARTING AUTOMATED EXPLOITATION -----\n", "auto_header")
+
             exploit_process = subprocess.Popen([exploit_script], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
             # Read and display output from exploit script
@@ -337,8 +355,13 @@ def auto_exploit():
                         nmap_textbox.insert(tk.END, line.strip())  # Output exploit script result in textbox
                         nmap_textbox.see(tk.END)
 
-            threading.Thread(target=read_exploit_output, daemon=True).start()
+                # After completion
+                exploit_process.stdout.close()
+                exploit_process.wait()
+                nmap_textbox.insert(tk.END, "\n----- EXPLOITATION COMPLETE -----\n", "auto_header")
 
+            threading.Thread(target=read_exploit_output, daemon=True).start()
+            
         else:
             messagebox.showerror("Error", "Exploit script not found. Ensure 'exploit.sh' is in the same directory.")
     except Exception as e:
@@ -451,10 +474,13 @@ results_frame = tk.Frame(existing_tab)
 results_frame.pack(pady=20)
 result_label = tk.Label(results_frame, text="Scan Results:")
 result_label.grid(row=0, column=0, padx=10, pady=5)
-result_table = ttk.Treeview(existing_tab, columns=("Vulnerability", "Severity", "Action"))
-result_table.heading("#1", text="Vulnerability")
-result_table.heading("#2", text="Severity")
-result_table.heading("#3", text="Action")
+result_table = ttk.Treeview(existing_tab, columns=("Vulnerability", "Severity", "Action"), show="headings")
+result_table.heading("Vulnerability", text="Vulnerability")
+result_table.heading("Severity", text="Severity")
+result_table.heading("Action", text="Action")
+result_table.column("Vulnerability", width=200)
+result_table.column("Severity", width=100)
+result_table.column("Action", width=200)
 result_table.pack(fill="both", expand=True)
 
 # Footer Section
@@ -488,12 +514,19 @@ nmap_scan_type_var = tk.StringVar(value=nmap_scan_types[0])
 nmap_scan_dropdown = ttk.Combobox(nmap_url_frame, textvariable=nmap_scan_type_var, values=nmap_scan_types, state="readonly")
 nmap_scan_dropdown.pack(side="left", padx=10)
 
-nmap_textbox = tk.Text(nmap_tab, wrap=tk.WORD, height=20, width=80)
+nmap_textbox = tk.Text(nmap_tab, wrap=tk.WORD, height=20, width=80, font=("Courier", 12))
 nmap_textbox.pack(fill="both", expand=True, padx=10, pady=10)
 
-# Button to Start Exploit
-automate_button = tk.Button(nmap_tab, text="Automate", command=auto_exploit)
-automate_button.pack(side= "left", pady=10)
+# Configure text tags for different colors and sizes
+nmap_textbox.tag_configure("green_text", foreground="green", font=("Courier", 12))
+nmap_textbox.tag_configure("success_text", foreground="green", font=("Courier", 12, "bold"))
+nmap_textbox.tag_configure("error_text", foreground="red", font=("Courier", 12, "bold"))
+nmap_textbox.tag_configure("auto_header", foreground="red", font=("Courier", 12, "bold"))
+
+
+# Button to Start Exploit 
+automate_button = tk.Button(nmap_tab, text="Automate", command=auto_exploit, bg="#ff9999", font=("Arial", 10, "bold"))
+automate_button.pack(side="left", pady=10, padx=10)
 
 
 # Button to start Nmap scan
