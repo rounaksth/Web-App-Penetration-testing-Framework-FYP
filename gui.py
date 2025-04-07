@@ -11,10 +11,13 @@ import logging
 import signal
 import time 
 from tkinter import simpledialog
+import json
+from tkinter import scrolledtext
 
 # Global variable to track the running process
 running_process = None
 nmap_process = None
+subjack_process = None
 process_lock = threading.Lock()  # Lock for synchronizing access to running_process and nmap_process
 
 # Configure logging
@@ -30,34 +33,148 @@ def open_help():
 
 # Function to export scan results to a PDF
 def export_to_pdf():
-    if not result_table.get_children():
-        messagebox.showwarning("Export Failed", "No results available to export.")
+    #Check if output_sqli-txt exists
+    output_file = "output_sqli.txt"
+    if not os.path.exists(output_file):
+        messagebox.showwarning("Export Failed", "No SQL Injection scan results available in output_sqli.txt.")
         return
+    #Read the content of output_sqli.txt
+    with open(output_file, "r") as f:
+        content = f.read()
 
+    #Initialize PDF
     pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
-    pdf.set_font("Arial", size=12)
-    pdf.cell(200, 10, txt="Web App Penetration Testing Results", ln=True, align="C")
+
+    # Set font for title
+    pdf.set_font("Arial", "B", 16)
+    pdf.cell(0, 10, "SQL Injection Scan Report", ln=True, align="C")
     pdf.ln(10)
-    pdf.set_font("Arial", size=10)
-    pdf.cell(60, 10, "Vulnerability", border=1)
-    pdf.cell(60, 10, "Severity", border=1)
-    pdf.cell(60, 10, "Action", border=1)
-    pdf.ln()
 
-    for child in result_table.get_children():
-        row_data = result_table.item(child)["values"]
-        pdf.cell(60, 10, str(row_data[0]), border=1)
-        pdf.cell(60, 10, str(row_data[1]), border=1)
-        pdf.cell(60, 10, str(row_data[2]), border=1)
-        pdf.ln()
+    # Parse and format content
+    lines = content.splitlines()
+    in_table = False
+    table_data = []
+    current_database = ""
 
+    for i, line in enumerate(lines):
+        # Header section
+        if line.startswith("==="):
+            pdf.set_font("Arial", "B", 12)
+            pdf.cell(0, 10, line.strip("=").strip(), ln=True)
+        elif line.startswith("Target:") or line.startswith("Started at:") or line.startswith("Ended at:"):
+            pdf.set_font("Arial", size=10)
+            pdf.cell(0, 8, line, ln=True)
+        elif "SQL Injection" in line and "|" in line:  # Structured result
+            pdf.set_font("Arial", "B", 12)
+            pdf.cell(0, 10, "Scan Summary", ln=True)
+            pdf.set_font("Arial", size=10)
+            vuln, severity, action = line.split("|")
+            pdf.cell(0, 8, f"Vulnerability: {vuln}", ln=True)
+            pdf.cell(0, 8, f"Severity: {severity}", ln=True)
+            pdf.cell(0, 8, f"Action: {action}", ln=True)
+            pdf.ln(5)
+
+    # SQLMap banner
+        elif line.startswith("        ___"):
+            pdf.set_font("Courier", size=10)
+            pdf.multi_cell(0, 5, "SQLMap Banner:\n" + line + "\n" + "\n".join(lines[i+1:i+5]))
+            pdf.ln(5)
+
+    # Database info
+        elif line.startswith("web server operating system:") or line.startswith("web application technology:") or line.startswith("back-end DBMS:"):
+            pdf.set_font("Arial", "B", 12)
+            pdf.cell(0, 10, "System Information", ln=True)
+            pdf.set_font("Arial", size=10)
+            pdf.cell(0, 8, line, ln=True)
+    # Database names
+        elif line.startswith("available databases"):
+            pdf.set_font("Arial", "B", 12)
+            pdf.cell(0, 10, "Available Databases", ln=True)
+            pdf.set_font("Arial", size=10)
+            for db_line in lines[i+1:]:
+                if db_line.startswith("[*]"):
+                    pdf.cell(0, 8, db_line[3:].strip(), ln=True)
+                elif not db_line.strip():
+                    break
+            pdf.ln(5)
+        # Table enumeration
+        elif line.startswith("Database:"):
+            current_database = line.split("Database:")[1].strip()
+            pdf.set_font("Arial", "B", 12)
+            pdf.cell(0, 10, f"Database: {current_database}", ln=True)
+        elif line.startswith("[") and "tables]" in line:
+            pdf.set_font("Arial", size=10)
+            for table_line in lines[i+2:]:
+                if table_line.startswith("|") and not table_line.startswith("+"):
+                    pdf.cell(0, 8, table_line.strip("| ").strip(), ln=True)
+                elif table_line.startswith("+"):
+                    break
+            pdf.ln(5)
+        # Table columns and data
+        elif line.startswith("Table:"):
+            table_name = line.split("Table:")[1].strip()
+            pdf.set_font("Arial", "B", 12)
+            pdf.cell(0, 10, f"Table: {table_name}", ln=True)
+        elif line.startswith("[") and "columns]" in line:
+            pdf.set_font("Arial", "B", 10)
+            pdf.cell(40, 8, "Column", border=1)
+            pdf.cell(40, 8, "Type", border=1)
+            pdf.ln()
+            pdf.set_font("Arial", size=10)
+            for col_line in lines[i+2:]:
+                if col_line.startswith("|") and not col_line.startswith("+"):
+                    cols = [col.strip() for col in col_line.split("|")[1:-1]]
+                    pdf.cell(40, 8, cols[0], border=1)
+                    pdf.cell(40, 8, cols[1], border=1)
+                    pdf.ln()
+                elif col_line.startswith("+"):
+                    break
+            pdf.ln(5)
+        elif line.startswith("[") and "entries]" in line:
+            in_table = True
+            table_data = []
+            # Look for the header row immediately after "[X entries]"
+            next_line_idx = i + 1
+            if next_line_idx < len(lines) and lines[next_line_idx].startswith("+"):
+                header_idx = next_line_idx + 1
+                if header_idx < len(lines) and lines[header_idx].startswith("|"):
+                    table_data.append([col.strip() for col in lines[header_idx].split("|")[1:-1]])
+        elif in_table and line.startswith("|") and not line.startswith("+"):
+            table_data.append([col.strip() for col in line.split("|")[1:-1]])
+        elif in_table and line.startswith("+"):
+            in_table = False
+            if table_data and len(table_data) > 0 and len(table_data[0]) > 0:  # Ensure table_data has content
+                pdf.set_font("Arial", "B", 10)
+                col_widths = [min(max(len(row[i]) for row in table_data) * 4, 60) for i in range(len(table_data[0]))]
+                for col, width in zip(table_data[0], col_widths):
+                    pdf.cell(width, 8, col, border=1)
+                pdf.ln()
+                pdf.set_font("Arial", size=10)
+                for row in table_data[1:]:
+                    for col, width in zip(row, col_widths):
+                        pdf.cell(width, 8, col[:int(width/4)] if len(col) > int(width/4) else col, border=1)
+                    pdf.ln()
+                pdf.ln(5)
+            else:
+                pdf.set_font("Arial", size=10)
+                pdf.cell(0, 8, "No data available for this table.", ln=True)
+                pdf.ln(5)
+
+    # Save PDF with timestamp
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    default_filename = f"scan_results_{timestamp}.pdf"
-    pdf_file = filedialog.asksaveasfilename(defaultextension=".pdf", filetypes=[("PDF Files", "*.pdf")], initialfile=default_filename)
+    default_filename = f"sqli_scan_results_{timestamp}.pdf"
+    pdf_file = filedialog.asksaveasfilename(
+        defaultextension=".pdf",
+        filetypes=[("PDF Files", "*.pdf")],
+        initialfile=default_filename
+    )
     if pdf_file:
         pdf.output(pdf_file)
         messagebox.showinfo("Export Successful", f"Results exported to {pdf_file}")
+
+
 
 # Function to show copyright
 def show_copyright():
@@ -397,6 +514,187 @@ def export_nmap_results():
         with open(file_format, "w") as file:
             file.write(results)
         messagebox.showinfo("Export Successful", f"Nmap results exported to {file_format}")
+
+# Function to run Subjack scan
+def run_subjack_scan():
+    target_domain = subjack_entry.get().strip()
+    if not target_domain or target_domain == "Enter target domain here":
+        messagebox.showerror("Error", "Please enter a valid target domain.")
+        return
+
+    # Clear previous results
+    subjack_textbox.delete("1.0", tk.END)
+    
+    # Check if Subjack is installed
+    try:
+        subprocess.run(["subjack", "-h"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+    except FileNotFoundError:
+        subjack_textbox.insert(tk.END, "Error: Subjack not found. Please ensure it's installed and in your PATH.\n")
+        subjack_textbox.insert(tk.END, "Installation: go install github.com/haccer/subjack@latest\n")
+        return
+    
+    # Disable the Start button and enable the Stop button
+    start_subjack_button.config(state=tk.DISABLED)
+    stop_subjack_button.config(state=tk.NORMAL)
+    
+    # Prepare command
+    output_file = f"subjack_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    command = [
+        "subjack",
+        "-d", target_domain,
+        "-o", output_file,
+        "-ssl",
+        "-a"  # All checks, not just subdomains with valid DNS records
+    ]
+    
+    if subjack_wordlist_var.get():
+        wordlist = subjack_wordlist_entry.get().strip()
+        if wordlist:
+            command.extend(["-w", wordlist])
+    
+    if subjack_timeout_var.get():
+        timeout = subjack_timeout_spinbox.get()
+        command.extend(["-t", timeout])
+    
+    # Run Subjack scan
+    global subjack_process
+    subjack_process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True
+    )
+    
+    # Function to read and display real-time output
+    def read_output():
+        for line in iter(subjack_process.stdout.readline, ''):
+            if line:
+                subjack_textbox.insert(tk.END, line)
+                subjack_textbox.see(tk.END)
+        
+        subjack_process.stdout.close()
+        subjack_process.wait()
+        
+        # Check if output file exists and read results
+        if os.path.exists(output_file) and os.path.getsize(output_file) > 0:
+            try:
+                with open(output_file, 'r') as file:
+                    results = json.load(file)
+                    subjack_textbox.insert(tk.END, "\n\n=== Scan Results ===\n")
+                    for result in results:
+                        if 'vulnerable' in result and result['vulnerable']:
+                            subjack_textbox.insert(tk.END, f"\nVulnerable subdomain found: {result['name']}\n", "vulnerable_text")
+                            subjack_textbox.insert(tk.END, f"Service: {result['service']}\n")
+                        else:
+                            subjack_textbox.insert(tk.END, f"\nChecked: {result['name']}\n")
+                    
+                    # Add to results table if vulnerabilities found
+                    vulnerabilities = [r for r in results if 'vulnerable' in r and r['vulnerable']]
+                    if vulnerabilities:
+                        result_table.insert("", "end", values=(
+                            f"Subdomain Takeover ({len(vulnerabilities)} found)",
+                            "High",
+                            "Fix DNS configurations"
+                        ))
+            except json.JSONDecodeError:
+                subjack_textbox.insert(tk.END, "\nNo vulnerable subdomains found.\n")
+        else:
+            subjack_textbox.insert(tk.END, "\nNo results file created or it's empty.\n")
+        
+        # Re-enable the Start button and disable the Stop button
+        start_subjack_button.config(state=tk.NORMAL)
+        stop_subjack_button.config(state=tk.DISABLED)
+    
+    # Start reading output in a separate thread
+    threading.Thread(target=read_output, daemon=True).start()
+
+# Function to stop Subjack scan
+def stop_subjack_scan():
+    global subjack_process
+    if subjack_process:
+        subjack_process.terminate()
+        subjack_textbox.insert(tk.END, "\nScan stopped by user.\n")
+        start_subjack_button.config(state=tk.NORMAL)
+        stop_subjack_button.config(state=tk.DISABLED)
+
+# Function to export Subjack results
+def export_subjack_results():
+    results = subjack_textbox.get("1.0", tk.END)
+    if not results.strip():
+        messagebox.showwarning("Export Failed", "No Subjack results to export.")
+        return
+
+    file_path = filedialog.asksaveasfilename(
+        defaultextension=".txt",
+        filetypes=[("Text Files", "*.txt"), ("All Files", "*.*")]
+    )
+    
+    if file_path:
+        with open(file_path, "w") as file:
+            file.write(results)
+        messagebox.showinfo("Export Successful", f"Subjack results exported to {file_path}")
+
+# Create a tab for Subjack
+subjack_tab = ttk.Frame(notebook)
+notebook.add(subjack_tab, text="Subdomain Takeover")
+
+# Subjack Tab Components
+subjack_frame = tk.Frame(subjack_tab)
+subjack_frame.pack(fill='x', pady=10)
+
+subjack_label = tk.Label(subjack_frame, text="Target Domain:")
+subjack_label.grid(row=0, column=0, padx=10, pady=5)
+
+subjack_entry = tk.Entry(subjack_frame, width=50)
+subjack_entry.grid(row=0, column=1, padx=10, pady=5)
+subjack_entry.insert(0, "Enter target domain here")
+subjack_entry.bind("<FocusIn>", lambda event: subjack_entry.delete(0, tk.END) if subjack_entry.get() == "Enter target domain here" else None)
+
+# Options frame
+subjack_options_frame = tk.Frame(subjack_tab)
+subjack_options_frame.pack(fill='x', pady=5)
+
+# Wordlist option
+subjack_wordlist_var = tk.BooleanVar(value=False)
+subjack_wordlist_check = tk.Checkbutton(subjack_options_frame, text="Use custom wordlist:", variable=subjack_wordlist_var)
+subjack_wordlist_check.grid(row=0, column=0, padx=5, pady=5)
+
+subjack_wordlist_entry = tk.Entry(subjack_options_frame, width=30)
+subjack_wordlist_entry.grid(row=0, column=1, padx=5, pady=5)
+subjack_wordlist_browse = tk.Button(subjack_options_frame, text="Browse", 
+                                   command=lambda: subjack_wordlist_entry.insert(0, filedialog.askopenfilename()))
+subjack_wordlist_browse.grid(row=0, column=2, padx=5, pady=5)
+
+# Timeout option
+subjack_timeout_var = tk.BooleanVar(value=False)
+subjack_timeout_check = tk.Checkbutton(subjack_options_frame, text="Custom timeout:", variable=subjack_timeout_var)
+subjack_timeout_check.grid(row=1, column=0, padx=5, pady=5)
+
+subjack_timeout_spinbox = tk.Spinbox(subjack_options_frame, from_=1, to=60, width=5)
+subjack_timeout_spinbox.grid(row=1, column=1, padx=5, pady=5)
+
+# Results display
+subjack_textbox = scrolledtext.ScrolledText(subjack_tab, wrap=tk.WORD, height=20, width=80)
+subjack_textbox.pack(fill="both", expand=True, padx=10, pady=10)
+
+# Configure text tags
+subjack_textbox.tag_configure("vulnerable_text", foreground="red", font=("Courier", 12, "bold"))
+
+# Control buttons
+subjack_button_frame = tk.Frame(subjack_tab)
+subjack_button_frame.pack(fill='x', pady=10)
+
+start_subjack_button = tk.Button(subjack_button_frame, text="Start Scan", command=run_subjack_scan)
+start_subjack_button.pack(side="left", padx=10)
+
+stop_subjack_button = tk.Button(subjack_button_frame, text="Stop Scan", command=stop_subjack_scan, state=tk.DISABLED)
+stop_subjack_button.pack(side="left", padx=10)
+
+export_subjack_button = tk.Button(subjack_button_frame, text="Export Results", command=export_subjack_results)
+export_subjack_button.pack(side="left", padx=10)
+
+
+
 
 # Create the main window
 root = tk.Tk()
