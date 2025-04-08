@@ -33,12 +33,22 @@ def open_help():
 
 # Function to export scan results to a PDF
 def export_to_pdf():
-    #Check if output_sqli-txt exists
-    output_file = "output_sqli.txt"
-    if not os.path.exists(output_file):
-        messagebox.showwarning("Export Failed", "No SQL Injection scan results available in output_sqli.txt.")
+    # Find the latest output file for SQLi or XSS
+    output_file = None
+    scan_type = scan_type_var.get()
+    prefix = "output_sqli" if scan_type == "SQLi" else "output_xss" if scan_type == "XSS" else None
+
+    if prefix:
+        output_files = [f for f in os.listdir() if f.startswith(prefix) and f.endswith(".txt")]
+        if output_files:
+            output_file = max(output_files, key=os.path.getctime)  # Get the latest file
+        else:
+            messagebox.showwarning("Export Failed", f"No {scan_type} scan results available.")
+            return
+    else:
+        messagebox.showwarning("Export Failed", "Unsupported scan type for PDF export.")
         return
-    #Read the content of output_sqli.txt
+
     with open(output_file, "r") as f:
         content = f.read()
 
@@ -66,7 +76,7 @@ def export_to_pdf():
         elif line.startswith("Target:") or line.startswith("Started at:") or line.startswith("Ended at:"):
             pdf.set_font("Arial", size=10)
             pdf.cell(0, 8, line, ln=True)
-        elif "SQL Injection" in line and "|" in line:  # Structured result
+        elif ("SQL Injection" in line or "Cross-Site Scripting" in line) and "|" in line:  # Structured result
             pdf.set_font("Arial", "B", 12)
             pdf.cell(0, 10, "Scan Summary", ln=True)
             pdf.set_font("Arial", size=10)
@@ -75,6 +85,16 @@ def export_to_pdf():
             pdf.cell(0, 8, f"Severity: {severity}", ln=True)
             pdf.cell(0, 8, f"Action: {action}", ln=True)
             pdf.ln(5)
+
+        # Add XSS-specific parsing if needed (e.g., xsstrike output details)
+        elif "Payload:" in line and scan_type == "XSS":
+            pdf.set_font("Arial", "B", 12)
+            pdf.cell(0, 10, "Detected Payloads", ln=True)
+            pdf.set_font("Arial", size=10)
+            pdf.multi_cell(0, 8, line.strip())
+            pdf.ln(5)
+
+
 
     # SQLMap banner
         elif line.startswith("        ___"):
@@ -164,7 +184,7 @@ def export_to_pdf():
 
     # Save PDF with timestamp
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    default_filename = f"sqli_scan_results_{timestamp}.pdf"
+    default_filename = f"{scan_type.lower()}_scan_results_{timestamp}.pdf"
     pdf_file = filedialog.asksaveasfilename(
         defaultextension=".pdf",
         filetypes=[("PDF Files", "*.pdf")],
@@ -237,27 +257,35 @@ def start_testing():
 
         def read_output():
             global running_process, nmap_process  
-            output_file = "output_sqli.txt" if scan_type == "SQLi" else None
+            output_file_prefix = "output_sqli" if scan_type == "SQLi" else "output_xss" if scan_type == "XSS" else None
+            output_file = None
 
-            if output_file:
-                # Wait for the output file to be created
-                while not os.path.exists(output_file) and running_process.poll() is None:
+            if output_file_prefix:
+                # Wait for an output file with the prefix to appear
+                while running_process.poll() is None:
+                    for f in os.listdir():
+                        if f.startswith(output_file_prefix) and f.endswith(".txt"):
+                            output_file = f
+                            break
+                    if output_file:
+                        break
                     time.sleep(0.5)
 
-                if os.path.exists(output_file):
+                if output_file and os.path.exists(output_file):
                     with open(output_file, "r") as f:
-                        f.seek(0, os.SEEK_END)  # Go to end of file
-                        while running_process.poll() is None:  # While process is running
+                        f.seek(0, os.SEEK_END)
+                        while running_process.poll() is None:
                             line = f.readline()
                             if line:
                                 output_queue.put(line.strip())
                             time.sleep(0.5)
-                        # Read final lines after process ends
                         while True:
                             line = f.readline()
                             if not line:
                                 break
                             output_queue.put(line.strip())
+
+                
             else:
             # Fallback to stdout for non-SQLi scans
                 for line in iter(running_process.stdout.readline, ''):
@@ -359,7 +387,7 @@ def process_queue():
                 break
             # Only process lines with exactly 3 columns separated by "|"
             columns = line.split("|")
-            if len(columns) == 3 and "SQL Injection" in columns[0]:  # Filter for SQLi results
+            if len(columns) == 3 and ("SQL Injection" in columns[0] or "Cross-Site Scripting" in columns[0]): # Filter for SQLi results
                 # Clear previous entries to ensure only one result
                 result_table.delete(*result_table.get_children())
                 result_table.insert("", "end", values=(columns[0], columns[1], columns[2]))
@@ -634,68 +662,6 @@ def export_subjack_results():
             file.write(results)
         messagebox.showinfo("Export Successful", f"Subjack results exported to {file_path}")
 
-# Create a tab for Subjack
-subjack_tab = ttk.Frame(notebook)
-notebook.add(subjack_tab, text="Subdomain Takeover")
-
-# Subjack Tab Components
-subjack_frame = tk.Frame(subjack_tab)
-subjack_frame.pack(fill='x', pady=10)
-
-subjack_label = tk.Label(subjack_frame, text="Target Domain:")
-subjack_label.grid(row=0, column=0, padx=10, pady=5)
-
-subjack_entry = tk.Entry(subjack_frame, width=50)
-subjack_entry.grid(row=0, column=1, padx=10, pady=5)
-subjack_entry.insert(0, "Enter target domain here")
-subjack_entry.bind("<FocusIn>", lambda event: subjack_entry.delete(0, tk.END) if subjack_entry.get() == "Enter target domain here" else None)
-
-# Options frame
-subjack_options_frame = tk.Frame(subjack_tab)
-subjack_options_frame.pack(fill='x', pady=5)
-
-# Wordlist option
-subjack_wordlist_var = tk.BooleanVar(value=False)
-subjack_wordlist_check = tk.Checkbutton(subjack_options_frame, text="Use custom wordlist:", variable=subjack_wordlist_var)
-subjack_wordlist_check.grid(row=0, column=0, padx=5, pady=5)
-
-subjack_wordlist_entry = tk.Entry(subjack_options_frame, width=30)
-subjack_wordlist_entry.grid(row=0, column=1, padx=5, pady=5)
-subjack_wordlist_browse = tk.Button(subjack_options_frame, text="Browse", 
-                                   command=lambda: subjack_wordlist_entry.insert(0, filedialog.askopenfilename()))
-subjack_wordlist_browse.grid(row=0, column=2, padx=5, pady=5)
-
-# Timeout option
-subjack_timeout_var = tk.BooleanVar(value=False)
-subjack_timeout_check = tk.Checkbutton(subjack_options_frame, text="Custom timeout:", variable=subjack_timeout_var)
-subjack_timeout_check.grid(row=1, column=0, padx=5, pady=5)
-
-subjack_timeout_spinbox = tk.Spinbox(subjack_options_frame, from_=1, to=60, width=5)
-subjack_timeout_spinbox.grid(row=1, column=1, padx=5, pady=5)
-
-# Results display
-subjack_textbox = scrolledtext.ScrolledText(subjack_tab, wrap=tk.WORD, height=20, width=80)
-subjack_textbox.pack(fill="both", expand=True, padx=10, pady=10)
-
-# Configure text tags
-subjack_textbox.tag_configure("vulnerable_text", foreground="red", font=("Courier", 12, "bold"))
-
-# Control buttons
-subjack_button_frame = tk.Frame(subjack_tab)
-subjack_button_frame.pack(fill='x', pady=10)
-
-start_subjack_button = tk.Button(subjack_button_frame, text="Start Scan", command=run_subjack_scan)
-start_subjack_button.pack(side="left", padx=10)
-
-stop_subjack_button = tk.Button(subjack_button_frame, text="Stop Scan", command=stop_subjack_scan, state=tk.DISABLED)
-stop_subjack_button.pack(side="left", padx=10)
-
-export_subjack_button = tk.Button(subjack_button_frame, text="Export Results", command=export_subjack_results)
-export_subjack_button.pack(side="left", padx=10)
-
-
-
-
 # Create the main window
 root = tk.Tk()
 root.title("Web Application Penetration Testing Framework")
@@ -838,6 +804,65 @@ stop_nmap_button.pack(pady=10)
 # Button to export Nmap results
 export_nmap_button = tk.Button(nmap_tab, text="Export Nmap Results", command=export_nmap_results)
 export_nmap_button.pack(pady=10)
+
+# Create a tab for Subjack
+subjack_tab = ttk.Frame(notebook)
+notebook.add(subjack_tab, text="Subdomain Takeover")
+
+# Subjack Tab Components
+subjack_frame = tk.Frame(subjack_tab)
+subjack_frame.pack(fill='x', pady=10)
+
+subjack_label = tk.Label(subjack_frame, text="Target Domain:")
+subjack_label.grid(row=0, column=0, padx=10, pady=5)
+
+subjack_entry = tk.Entry(subjack_frame, width=50)
+subjack_entry.grid(row=0, column=1, padx=10, pady=5)
+subjack_entry.insert(0, "Enter target domain here")
+subjack_entry.bind("<FocusIn>", lambda event: subjack_entry.delete(0, tk.END) if subjack_entry.get() == "Enter target domain here" else None)
+
+# Options frame
+subjack_options_frame = tk.Frame(subjack_tab)
+subjack_options_frame.pack(fill='x', pady=5)
+
+# Wordlist option
+subjack_wordlist_var = tk.BooleanVar(value=False)
+subjack_wordlist_check = tk.Checkbutton(subjack_options_frame, text="Use custom wordlist:", variable=subjack_wordlist_var)
+subjack_wordlist_check.grid(row=0, column=0, padx=5, pady=5)
+
+subjack_wordlist_entry = tk.Entry(subjack_options_frame, width=30)
+subjack_wordlist_entry.grid(row=0, column=1, padx=5, pady=5)
+subjack_wordlist_browse = tk.Button(subjack_options_frame, text="Browse", 
+                                   command=lambda: subjack_wordlist_entry.insert(0, filedialog.askopenfilename()))
+subjack_wordlist_browse.grid(row=0, column=2, padx=5, pady=5)
+
+# Timeout option
+subjack_timeout_var = tk.BooleanVar(value=False)
+subjack_timeout_check = tk.Checkbutton(subjack_options_frame, text="Custom timeout:", variable=subjack_timeout_var)
+subjack_timeout_check.grid(row=1, column=0, padx=5, pady=5)
+
+subjack_timeout_spinbox = tk.Spinbox(subjack_options_frame, from_=1, to=60, width=5)
+subjack_timeout_spinbox.grid(row=1, column=1, padx=5, pady=5)
+
+# Results display
+subjack_textbox = scrolledtext.ScrolledText(subjack_tab, wrap=tk.WORD, height=20, width=80)
+subjack_textbox.pack(fill="both", expand=True, padx=10, pady=10)
+
+# Configure text tags
+subjack_textbox.tag_configure("vulnerable_text", foreground="red", font=("Courier", 12, "bold"))
+
+# Control buttons
+subjack_button_frame = tk.Frame(subjack_tab)
+subjack_button_frame.pack(fill='x', pady=10)
+
+start_subjack_button = tk.Button(subjack_button_frame, text="Start Scan", command=run_subjack_scan)
+start_subjack_button.pack(side="left", padx=10)
+
+stop_subjack_button = tk.Button(subjack_button_frame, text="Stop Scan", command=stop_subjack_scan, state=tk.DISABLED)
+stop_subjack_button.pack(side="left", padx=10)
+
+export_subjack_button = tk.Button(subjack_button_frame, text="Export Results", command=export_subjack_results)
+export_subjack_button.pack(side="left", padx=10)
 
 # Queue for thread-safe communication
 output_queue = queue.Queue()
