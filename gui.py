@@ -86,12 +86,21 @@ def export_to_pdf():
             pdf.cell(0, 8, f"Action: {action}", ln=True)
             pdf.ln(5)
 
-        # Add XSS-specific parsing if needed (e.g., xsstrike output details)
-        elif "Payload:" in line and scan_type == "XSS":
+        elif scan_type == "XSS":
             pdf.set_font("Arial", "B", 12)
-            pdf.cell(0, 10, "Detected Payloads", ln=True)
+            pdf.cell(0, 10, "XSS Scan Details", ln=True)
             pdf.set_font("Arial", size=10)
-            pdf.multi_cell(0, 8, line.strip())
+            for line in lines:
+                if "Payload:" in line:
+                    pdf.multi_cell(0, 8, "Payload: " + line.strip())
+                elif "Efficiency:" in line:
+                    pdf.multi_cell(0, 8, "Efficiency: " + line.strip())
+                elif "Vulnerable webpage" in line:
+                    pdf.multi_cell(0, 8, "Vulnerable: " + line.strip())
+                elif "DOM XSS" in line:
+                    pdf.multi_cell(0, 8, "DOM XSS: " + line.strip())
+                elif "WAF detected" in line:
+                    pdf.multi_cell(0, 8, "WAF Info: " + line.strip())
             pdf.ln(5)
 
 
@@ -218,17 +227,32 @@ def start_testing():
         return
 
     script_path = "./pentest.sh"
-    if not os.path.exists(script_path):
-        messagebox.showerror("Error", "Backend script not found. Ensure 'pentest.sh' is in the same directory.")
+    if not os.path.exists(script_path) or not os.access(script_path, os.X_OK):
+        messagebox.showerror("Error", "Backend script not found or not executable.")
         return
-    if not os.access(script_path, os.X_OK):
-        messagebox.showerror("Error", "Backend script is not executable. Please check permissions.")
-        return
+    
+    # Build custom options for XSS
+    custom_options = ""
+    if scan_type == "XSS":
+        if dom_xss_var.get():
+            custom_options += "--dom "
+        if waf_bypass_var.get():
+            custom_options += "--waf-bypass "
+        if custom_payload_var.get():
+            payload = custom_payload_entry.get().strip()
+            if payload:
+                custom_options += f"--payload='{payload}' "
+        if blind_xss_var.get():
+            custom_options += "--blind-xss "
+        threads = threads_spinbox.get()
+        custom_options += f"--threads={threads}"
 
-    command = [script_path, target_url, scan_type, scan_depth, timeout]
+
+    command = [script_path, target_url, scan_type, scan_depth, timeout, "", custom_options.strip()]
 
     # Clear previous results
     result_table.delete(*result_table.get_children())
+    result_textbox.delete("1.0", tk.END) # Clear the output
 
     # Disable the "Start Scan" button and enable the "Stop Scan" button
     start_button.config(state=tk.DISABLED)
@@ -385,9 +409,10 @@ def process_queue():
             line = output_queue.get_nowait()
             if line is None:
                 break
-            # Only process lines with exactly 3 columns separated by "|"
+            result_textbox.insert(tk.END, line + "\n", "green_text")
+            result_textbox.see(tk.END) 
             columns = line.split("|")
-            if len(columns) == 3 and ("SQL Injection" in columns[0] or "Cross-Site Scripting" in columns[0]): # Filter for SQLi results
+            if len(columns) == 3 and ("SQL Injection" in columns[0] or "Cross-Site Scripting" in columns[0] or "DOM-based XSS in columns[0]"): 
                 # Clear previous entries to ensure only one result
                 result_table.delete(*result_table.get_children())
                 result_table.insert("", "end", values=(columns[0], columns[1], columns[2]))
@@ -482,6 +507,72 @@ def run_nmap_scan(target_url, scan_type):
     # Start reading output in a separate thread
     threading.Thread(target=read_output, daemon=True).start()
 
+def auto_exploit_xss():
+    # Check if there are XSS results to exploit
+    output_file_prefix = "output_xss"
+    output_file = None
+    output_files = [f for f in os.listdir() if f.startswith(output_file_prefix) and f.endswith(".txt")]
+    if output_files:
+        output_file = max(output_files, key=os.path.getctime)  # Get the latest file
+    else:
+        messagebox.showwarning("Exploit Failed", "No XSS scan results available to exploit.")
+        return
+
+    # Read the output file to find vulnerable URLs and parameters
+    with open(output_file, "r") as f:
+        content = f.read()
+
+    # Parse the output for vulnerable webpages and vectors
+    vulnerable_pages = []
+    lines = content.splitlines()
+    current_url = None
+    for line in lines:
+        if "[++] Vulnerable webpage:" in line:
+            current_url = line.split("[++] Vulnerable webpage: ")[1].strip()
+        elif "[++] Vector for" in line and current_url:
+            param = line.split("Vector for ")[1].split(":")[0].strip()
+            payload = line.split(": ")[1].strip()
+            vulnerable_pages.append((current_url, param, payload))
+
+    if not vulnerable_pages:
+        messagebox.showinfo("Exploit Failed", "No exploitable XSS vulnerabilities found in the scan results.")
+        return
+
+    # Add a header for the exploit section
+    result_textbox.insert(tk.END, "\n----- STARTING XSS EXPLOITATION -----\n", "auto_header")
+
+    # Exploit each vulnerable page
+    for url, param, original_payload in vulnerable_pages:
+        try:
+            # Construct a simple exploit payload (e.g., alert)
+            exploit_payload = "<img src=x onerror=alert('Exploited_XSS')>"
+            # Replace the parameter value with the exploit payload
+            from urllib.parse import urlparse, parse_qs, urlencode
+            parsed_url = urlparse(url)
+            query_params = parse_qs(parsed_url.query)
+            query_params[param] = exploit_payload
+            new_query = urlencode(query_params, doseq=True)
+            exploit_url = parsed_url._replace(query=new_query).geturl()
+
+            # Log the exploit attempt
+            result_textbox.insert(tk.END, f"Exploiting {url}\n", "green_text")
+            result_textbox.insert(tk.END, f"Parameter: {param}\n", "green_text")
+            result_textbox.insert(tk.END, f"Exploit URL: {exploit_url}\n", "green_text")
+            result_textbox.see(tk.END)
+
+            # Simulate the exploit by opening the URL (for testing purposes)
+            # In a real scenario, you'd use a headless browser to verify execution
+            import webbrowser
+            webbrowser.open(exploit_url)
+            result_textbox.insert(tk.END, "Exploit executed. Check your browser for an alert.\n", "green_text")
+
+        except Exception as e:
+            logging.error(f"Error in XSS exploit: {str(e)}")
+            result_textbox.insert(tk.END, f"Error exploiting {url}: {str(e)}\n", "error_text")
+
+    result_textbox.insert(tk.END, "\n----- XSS EXPLOITATION COMPLETE -----\n", "auto_header")
+    result_textbox.see(tk.END)
+    
 def auto_exploit():
     # Assuming vulnerabilities are found, run the exploit script
     try:
@@ -721,6 +812,35 @@ timeout_label.grid(row=2, column=0, padx=10, pady=5)
 timeout_spinbox = tk.Spinbox(scan_frame, from_=1, to=60, width=5)
 timeout_spinbox.grid(row=2, column=1, padx=10, pady=5)
 
+# Advanced XSS Options Frame
+xss_options_frame = tk.LabelFrame(scan_frame, text="Advanced XSS Options")
+xss_options_frame.grid(row=3, column=0, columnspan=2, padx=10, pady=5, sticky="ew")
+
+# DOM-based XSS
+dom_xss_var = tk.BooleanVar(value=False)
+tk.Checkbutton(xss_options_frame, text="DOM-based XSS Detection", variable=dom_xss_var).grid(row=0, column=0, padx=5, pady=2)
+
+# WAF Bypass
+waf_bypass_var = tk.BooleanVar(value=False)
+tk.Checkbutton(xss_options_frame, text="WAF Detection & Bypass", variable=waf_bypass_var).grid(row=0, column=1, padx=5, pady=2)
+
+# Custom Payload
+custom_payload_var = tk.BooleanVar(value=False)
+tk.Checkbutton(xss_options_frame, text="Custom Payload:", variable=custom_payload_var).grid(row=1, column=0, padx=5, pady=2)
+custom_payload_entry = tk.Entry(xss_options_frame, width=30)
+custom_payload_entry.grid(row=1, column=1, padx=5, pady=2)
+custom_payload_entry.insert(0, "<script>alert('test')</script>")
+
+# Blind XSS
+blind_xss_var = tk.BooleanVar(value=False)
+tk.Checkbutton(xss_options_frame, text="Blind XSS Detection", variable=blind_xss_var).grid(row=2, column=0, padx=5, pady=2)
+
+# Threads
+threads_label = tk.Label(xss_options_frame, text="Threads:")
+threads_label.grid(row=2, column=1, padx=5, pady=2)
+threads_spinbox = tk.Spinbox(xss_options_frame, from_=1, to=20, width=5)
+threads_spinbox.grid(row=2, column=2, padx=5, pady=2)
+
 # Start Scan Button
 start_button = tk.Button(input_frame, text="Start Scan", command=start_testing)
 start_button.grid(row=1, column=0, padx=10, pady=5)
@@ -747,6 +867,14 @@ result_table.column("Severity", width=100)
 result_table.column("Action", width=200)
 result_table.pack(fill="both", expand=True)
 
+# Add a Text widget for detailed results
+result_textbox = tk.Text(results_frame, wrap=tk.WORD, height=10, width=80)
+result_textbox.grid(row=1, column=0, columnspan=3, padx=10, pady=10)
+
+# Configure green text tag
+result_textbox.tag_configure("green_text", foreground="green", font=("Courier", 12))
+
+
 # Footer Section
 footer_frame = tk.Frame(existing_tab)
 footer_frame.pack(fill='x', pady=10)
@@ -754,6 +882,9 @@ contact_button = tk.Button(footer_frame, text="Contact Support", command=contact
 contact_button.pack(side="left", padx=10)
 pdf_button = tk.Button(footer_frame, text="Export Results as PDF", command=export_to_pdf)
 pdf_button.pack(side="left", padx=10)
+# Add an Exploit button
+exploit_button = tk.Button(footer_frame, text="Exploit XSS", command=lambda: auto_exploit_xss(), bg="#ff9999", font=("Arial", 10, "bold"))
+exploit_button.pack(side="left", padx=10)
 copyright_button = tk.Button(footer_frame, text="Copyright", command=show_copyright)
 copyright_button.pack(side="right", padx=10)
 
