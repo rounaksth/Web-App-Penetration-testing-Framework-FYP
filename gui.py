@@ -13,6 +13,7 @@ import time
 from tkinter import simpledialog
 import json
 from tkinter import scrolledtext
+import webbrowser
 
 # Global variable to track the running process
 running_process = None
@@ -36,7 +37,7 @@ def export_to_pdf():
     # Find the latest output file for SQLi or XSS
     output_file = None
     scan_type = scan_type_var.get()
-    prefix = "output_sqli" if scan_type == "SQLi" else "output_xss" if scan_type == "XSS" else None
+    prefix = "output_sqli" if scan_type == "SQLi" else "output_xss" if scan_type == "XSS" else "output_simple_xss" if scan_type == "Simple XSS" else None
 
     if prefix:
         output_files = [f for f in os.listdir() if f.startswith(prefix) and f.endswith(".txt")]
@@ -52,7 +53,7 @@ def export_to_pdf():
     with open(output_file, "r") as f:
         content = f.read()
 
-    #Initialize PDF
+    # Initialize PDF
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
@@ -76,7 +77,7 @@ def export_to_pdf():
         elif line.startswith("Target:") or line.startswith("Started at:") or line.startswith("Ended at:"):
             pdf.set_font("Arial", size=10)
             pdf.cell(0, 8, line, ln=True)
-        elif ("SQL Injection" in line or "Cross-Site Scripting" in line) and "|" in line:  # Structured result
+        elif ("SQL Injection" in line or "Cross-Site Scripting" in line or "DOM-based XSS" in line) and "|" in line:  # Structured result
             pdf.set_font("Arial", "B", 12)
             pdf.cell(0, 10, "Scan Summary", ln=True)
             pdf.set_font("Arial", size=10)
@@ -103,21 +104,19 @@ def export_to_pdf():
                     pdf.multi_cell(0, 8, "WAF Info: " + line.strip())
             pdf.ln(5)
 
-
-
-    # SQLMap banner
+        # SQLMap banner
         elif line.startswith("        ___"):
             pdf.set_font("Courier", size=10)
             pdf.multi_cell(0, 5, "SQLMap Banner:\n" + line + "\n" + "\n".join(lines[i+1:i+5]))
             pdf.ln(5)
 
-    # Database info
+        # Database info
         elif line.startswith("web server operating system:") or line.startswith("web application technology:") or line.startswith("back-end DBMS:"):
             pdf.set_font("Arial", "B", 12)
             pdf.cell(0, 10, "System Information", ln=True)
             pdf.set_font("Arial", size=10)
             pdf.cell(0, 8, line, ln=True)
-    # Database names
+        # Database names
         elif line.startswith("available databases"):
             pdf.set_font("Arial", "B", 12)
             pdf.cell(0, 10, "Available Databases", ln=True)
@@ -203,8 +202,6 @@ def export_to_pdf():
         pdf.output(pdf_file)
         messagebox.showinfo("Export Successful", f"Results exported to {pdf_file}")
 
-
-
 # Function to show copyright
 def show_copyright():
     messagebox.showinfo("Copyright", "© 2025 Rounak Pradhan. All Rights Reserved.")
@@ -230,25 +227,9 @@ def start_testing():
     if not os.path.exists(script_path) or not os.access(script_path, os.X_OK):
         messagebox.showerror("Error", "Backend script not found or not executable.")
         return
-    
-    # Build custom options for XSS
-    custom_options = ""
-    if scan_type == "XSS":
-        if dom_xss_var.get():
-            custom_options += "--dom "
-        if waf_bypass_var.get():
-            custom_options += "--waf-bypass "
-        if custom_payload_var.get():
-            payload = custom_payload_entry.get().strip()
-            if payload:
-                custom_options += f"--payload='{payload}' "
-        if blind_xss_var.get():
-            custom_options += "--blind-xss "
-        threads = threads_spinbox.get()
-        custom_options += f"--threads={threads}"
 
-
-    command = [script_path, target_url, scan_type, scan_depth, timeout, "", custom_options.strip()]
+    # Construct command to run the script within the virtual environment
+    command = [script_path, target_url, scan_type, scan_depth, timeout, ""]
 
     # Clear previous results
     result_table.delete(*result_table.get_children())
@@ -264,7 +245,7 @@ def start_testing():
         # Start the process
         with process_lock:
             running_process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            nmap_process = running_process #Assign running_process to nmap_process---
+            nmap_process = running_process # Assign running_process to nmap_process
 
         # Wait for the PID file to be created
         pid_file = "pentest.pid"
@@ -281,59 +262,95 @@ def start_testing():
 
         def read_output():
             global running_process, nmap_process  
-            output_file_prefix = "output_sqli" if scan_type == "SQLi" else "output_xss" if scan_type == "XSS" else None
+            output_file_prefix = "output_sqli" if scan_type == "SQLi" else "output_xss" if scan_type == "XSS" else "output_simple_xss" if scan_type == "Simple XSS" else None
             output_file = None
 
             if output_file_prefix:
-                # Wait for an output file with the prefix to appear
-                while running_process.poll() is None:
-                    for f in os.listdir():
-                        if f.startswith(output_file_prefix) and f.endswith(".txt"):
-                            output_file = f
-                            break
-                    if output_file:
-                        break
-                    time.sleep(0.5)
+                # Read real-time output from stdout while the scan is running
+                for line in iter(running_process.stdout.readline, ''):
+                    if line:
+                        output_queue.put(line.strip())
+                    time.sleep(0.1)
+                running_process.stdout.close()
+                running_process.wait()
 
+                # After the scan completes, look for the output file
+                output_files = [f for f in os.listdir() if f.startswith(output_file_prefix) and f.endswith(".txt")]
+                logging.info(f"Found output files: {output_files}")
+                # Filter for files with timestamps 
+                timestamped_files = [f for f in output_files if f.startswith(output_file_prefix + "_") and f[len(output_file_prefix) + 1:-4].isdigit()]
+                if timestamped_files:
+                    output_file = max(timestamped_files, key=lambda x: int(x.split("_")[-1].split(".")[0]))
+                    logging.info(f"Selected timestamped output file: {output_file}")
+                # Fallback to non-timestamped file (e.g., output_sqli.txt)
+                elif output_file_prefix + ".txt" in output_files:
+                    output_file = output_file_prefix + ".txt"
+                    logging.info(f"Selected non-timestamped output file: {output_file}")
+                else:
+                    output_queue.put("No output file found.")
+                    logging.warning("No output file found after scan completion.")
+
+                # If an output file was found, process it
                 if output_file and os.path.exists(output_file):
+                    # Parse the file to populate the exploit listbox
                     with open(output_file, "r") as f:
-                        f.seek(0, os.SEEK_END)
-                        while running_process.poll() is None:
-                            line = f.readline()
-                            if line:
-                                output_queue.put(line.strip())
-                            time.sleep(0.5)
-                        while True:
-                            line = f.readline()
-                            if not line:
-                                break
-                            output_queue.put(line.strip())
+                        lines = f.readlines()
+                        logging.info(f"Reading output file contents:\n{''.join(lines)}")
+                        for i, line in enumerate(lines):
+                            if line.startswith("URL:"):
+                                url = line.split("URL: ")[1].strip()
+                                logging.info(f"Found URL: {url}")
+                                next_line = lines[i + 2] if i + 2 < len(lines) else ""
+                                logging.info(f"Checking next line for vulnerability: {next_line}")
+                                if "Result: VULNERABLE" in next_line:
+                                    exploit_listbox.insert(tk.END, url)
+                                    logging.info(f"Added vulnerable URL to exploit_listbox: {url}")
+                                else:
+                                    logging.info(f"URL not vulnerable: {url}")
 
-                
+                    # Read and display the entire file content
+                    with open(output_file, "r") as f:
+                        content = f.read()
+                        for line in content.splitlines():
+                            output_queue.put(line.strip())
+                else:
+                    output_queue.put("No output file found after scan completion.")
             else:
-            # Fallback to stdout for non-SQLi scans
+                # Fallback to stdout for non-SQLi/XSS scans
                 for line in iter(running_process.stdout.readline, ''):
                     if line:
                         output_queue.put(line.strip())
                 running_process.stdout.close()
-            running_process.wait()
+                running_process.wait()
 
             progress_bar.stop()
 
-            # Re-enable the "Start Scan" button and disable the "Stop Scan" button
-            start_button.config(state=tk.NORMAL)
-            stop_button.config(state=tk.DISABLED)
+            # Enable the exploit button if there are vulnerable URLs
+            if exploit_listbox.size() > 0:
+                exploit_button.config(state=tk.NORMAL)
+                logging.info(f"Enabled exploit button. Exploit listbox size: {exploit_listbox.size()}")
+            else:
+                logging.info("Exploit button remains disabled. No vulnerable URLs found.")
 
-            # Check if running_process is still valid
+            # Check if running_process is still valid and show pop-up
             with process_lock:
                 if running_process is not None:
                     if running_process.returncode == 0:
-                        messagebox.showinfo("Scan Completed", "Penetration Testing completed successfully!")
-
+                        output_queue.put("Penetration Testing completed successfully!")
+                        root.after(0, lambda: (
+                            messagebox.showinfo("Scan Complete", "Scan completed successfully!"),
+                            start_button.config(state=tk.NORMAL),
+                            stop_button.config(state=tk.DISABLED)
+                        ))
                     else:
                         error_message = running_process.stderr.read().strip()
-                        messagebox.showerror("Error", f"Scan failed: {error_message}")
-
+                        output_queue.put(f"Scan failed: {error_message}")
+                        root.after(0, lambda: (
+                            messagebox.showinfo("Scan Failed", f"Scan failed: {error_message}"),
+                            start_button.config(state=tk.NORMAL),
+                            stop_button.config(state=tk.DISABLED)
+                        ))
+                        
             # Clean up the PID file
             pid_file = "pentest.pid"
             if os.path.exists(pid_file):
@@ -372,8 +389,8 @@ def stop_scan():
                     running_process.terminate()  # Terminate the subprocess
                     running_process.wait()  # Wait for the process to fully terminate
                 if nmap_process:
-                    nmap_process.terminate() #Terminate the nmap process
-                    nmap_process.wait() #Wait for the process to fully terminate
+                    nmap_process.terminate() # Terminate the nmap process
+                    nmap_process.wait() # Wait for the process to fully terminate
 
             # Stop the progress bar and update GUI
             progress_bar.stop()
@@ -412,7 +429,7 @@ def process_queue():
             result_textbox.insert(tk.END, line + "\n", "green_text")
             result_textbox.see(tk.END) 
             columns = line.split("|")
-            if len(columns) == 3 and ("SQL Injection" in columns[0] or "Cross-Site Scripting" in columns[0] or "DOM-based XSS in columns[0]"): 
+            if len(columns) == 3 and ("SQL Injection" in columns[0] or "Cross-Site Scripting" in columns[0] or "DOM-based XSS" in columns[0]): 
                 # Clear previous entries to ensure only one result
                 result_table.delete(*result_table.get_children())
                 result_table.insert("", "end", values=(columns[0], columns[1], columns[2]))
@@ -434,7 +451,7 @@ def run_nmap_scan(target_url, scan_type):
     # Clear previous results
     nmap_textbox.delete("1.0", tk.END)
 
-    # Define Nmap commands based on scan type-----types
+    # Define Nmap commands based on scan type
     if scan_type == "Quick Scan":
         command = ["nmap", "-T4", "-F", target_url]
     elif scan_type == "Full Scan":
@@ -456,7 +473,7 @@ def run_nmap_scan(target_url, scan_type):
     elif scan_type == "Custom Scan":
         custom_options = simpledialog.askstring("Custom Scan", "Enter Nmap options (e.g., -sV -O -p 80):")
         if not custom_options:
-            messagebox.showerror("Error", "No custome options provided.")
+            messagebox.showerror("Error", "No custom options provided.")
             return
         command = ["nmap"] + custom_options.split() + [target_url]
     else:
@@ -472,7 +489,6 @@ def run_nmap_scan(target_url, scan_type):
     nmap_process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
     # Function to read and display real-time output
-
     def read_output():
         global nmap_process
 
@@ -499,7 +515,6 @@ def run_nmap_scan(target_url, scan_type):
         with process_lock:
             if nmap_process is not None and nmap_process.returncode == 0:
                 nmap_textbox.insert(tk.END, "\nNmap scan completed successfully!\n")
-                
             else:
                 error = nmap_process.stderr.read() if nmap_process else "Nmap process was not started."
                 nmap_textbox.insert(tk.END, f"\nError: {error}\n")
@@ -508,67 +523,41 @@ def run_nmap_scan(target_url, scan_type):
     threading.Thread(target=read_output, daemon=True).start()
 
 def auto_exploit_xss():
-    # Check if there are XSS results to exploit
-    output_file_prefix = "output_xss"
-    output_file = None
-    output_files = [f for f in os.listdir() if f.startswith(output_file_prefix) and f.endswith(".txt")]
-    if output_files:
-        output_file = max(output_files, key=os.path.getctime)  # Get the latest file
-    else:
-        messagebox.showwarning("Exploit Failed", "No XSS scan results available to exploit.")
+    # Check if a URL is selected in the listbox
+    selected = exploit_listbox.curselection()
+    if not selected:
+        messagebox.showwarning("Exploit Failed", "Please select a URL to exploit.")
         return
+    
+    url = exploit_listbox.get(selected[0])
+    scan_type = scan_type_var.get()
 
-    # Read the output file to find vulnerable URLs and parameters
-    with open(output_file, "r") as f:
-        content = f.read()
-
-    # Parse the output for vulnerable webpages and vectors
-    vulnerable_pages = []
-    lines = content.splitlines()
-    current_url = None
-    for line in lines:
-        if "[++] Vulnerable webpage:" in line:
-            current_url = line.split("[++] Vulnerable webpage: ")[1].strip()
-        elif "[++] Vector for" in line and current_url:
-            param = line.split("Vector for ")[1].split(":")[0].strip()
-            payload = line.split(": ")[1].strip()
-            vulnerable_pages.append((current_url, param, payload))
-
-    if not vulnerable_pages:
-        messagebox.showinfo("Exploit Failed", "No exploitable XSS vulnerabilities found in the scan results.")
+    if not url:
+        messagebox.showwarning("Exploit Failed", "No URL selected for exploitation.")
         return
-
-    # Add a header for the exploit section
+    
+        # Add a header for the exploit section
     result_textbox.insert(tk.END, "\n----- STARTING XSS EXPLOITATION -----\n", "auto_header")
 
-    # Exploit each vulnerable page
-    for url, param, original_payload in vulnerable_pages:
-        try:
-            # Construct a simple exploit payload (e.g., alert)
-            exploit_payload = "<img src=x onerror=alert('Exploited_XSS')>"
-            # Replace the parameter value with the exploit payload
-            from urllib.parse import urlparse, parse_qs, urlencode
-            parsed_url = urlparse(url)
-            query_params = parse_qs(parsed_url.query)
-            query_params[param] = exploit_payload
-            new_query = urlencode(query_params, doseq=True)
-            exploit_url = parsed_url._replace(query=new_query).geturl()
+    # Exploit the selected URL
+    try:
+        # Construct a simple exploit payload (e.g., alert)
+        exploit_payload = "<img src=x onerror=alert('Exploited_XSS')>"
+        # Replace the original payload with the exploit payload
+        exploit_url = url.replace('"/></script><script>confirm(1)</script>', exploit_payload)
 
-            # Log the exploit attempt
-            result_textbox.insert(tk.END, f"Exploiting {url}\n", "green_text")
-            result_textbox.insert(tk.END, f"Parameter: {param}\n", "green_text")
-            result_textbox.insert(tk.END, f"Exploit URL: {exploit_url}\n", "green_text")
-            result_textbox.see(tk.END)
+        # Log the exploit attempt
+        result_textbox.insert(tk.END, f"Exploiting {url}\n", "green_text")
+        result_textbox.insert(tk.END, f"Exploit URL: {exploit_url}\n", "green_text")
+        result_textbox.see(tk.END)
 
-            # Simulate the exploit by opening the URL (for testing purposes)
-            # In a real scenario, you'd use a headless browser to verify execution
-            import webbrowser
-            webbrowser.open(exploit_url)
-            result_textbox.insert(tk.END, "Exploit executed. Check your browser for an alert.\n", "green_text")
+        # Open the URL in the browser
+        webbrowser.open(exploit_url)
+        result_textbox.insert(tk.END, "Exploit executed. Check your browser for an alert.\n", "green_text")
 
-        except Exception as e:
-            logging.error(f"Error in XSS exploit: {str(e)}")
-            result_textbox.insert(tk.END, f"Error exploiting {url}: {str(e)}\n", "error_text")
+    except Exception as e:
+        logging.error(f"Error in XSS exploit: {str(e)}")
+        result_textbox.insert(tk.END, f"Error exploiting {url}: {str(e)}\n", "error_text")
 
     result_textbox.insert(tk.END, "\n----- XSS EXPLOITATION COMPLETE -----\n", "auto_header")
     result_textbox.see(tk.END)
@@ -578,7 +567,6 @@ def auto_exploit():
     try:
         exploit_script = "./exploit.sh"
         if os.path.exists(exploit_script):
-            
             # Add a header for the exploit section
             nmap_textbox.insert(tk.END, "\n----- STARTING AUTOMATED EXPLOITATION -----\n", "auto_header")
 
@@ -597,13 +585,11 @@ def auto_exploit():
                 nmap_textbox.insert(tk.END, "\n----- EXPLOITATION COMPLETE -----\n", "auto_header")
 
             threading.Thread(target=read_exploit_output, daemon=True).start()
-            
         else:
             messagebox.showerror("Error", "Exploit script not found. Ensure 'exploit.sh' is in the same directory.")
     except Exception as e:
         logging.error(f"Error in exploit: {str(e)}")
         messagebox.showerror("Error", f"Error executing exploit: {str(e)}")
-   
 
 # Function to stop Nmap scan
 def stop_nmap_scan():
@@ -757,6 +743,7 @@ def export_subjack_results():
 root = tk.Tk()
 root.title("Web Application Penetration Testing Framework")
 root.geometry("1000x700")
+root.minsize(800, 600)
 
 # Create a notebook (tabbed interface)
 notebook = ttk.Notebook(root)
@@ -773,7 +760,16 @@ notebook.add(nmap_tab, text="Nmap Scan")
 # Header Section
 header_frame = tk.Frame(existing_tab)
 header_frame.pack(fill='x', pady=10)
-logo_label = tk.Label(header_frame, text="[LOGO]", font=("Arial", 24, "bold"))
+
+# Load the logo image
+try:
+    logo_image = tk.PhotoImage(file="WAPTF.png")  
+    logo_image = logo_image.subsample(14, 14) 
+    logo_label = tk.Label(header_frame, image=logo_image)
+    logo_label.image = logo_image  # Keep a reference to prevent garbage collection
+except tk.TclError:
+    logo_label = tk.Label(header_frame, text="[LOGO]", font=("Arial", 24, "bold"))
+
 logo_label.pack(side="left", padx=10)
 title_label = tk.Label(header_frame, text="Web App Penetration Testing Framework", font=("Arial", 20, "bold"))
 title_label.pack(side="left")
@@ -799,10 +795,10 @@ scan_frame = tk.Frame(existing_tab)
 scan_frame.pack(pady=20)
 scan_label = tk.Label(scan_frame, text="Select Scan Type:")
 scan_label.grid(row=0, column=0, padx=10, pady=5)
-scan_types = ["SQLi", "XSS", "Comprehensive"]
+scan_types = ["SQLi", "XSS", "Simple XSS", "Comprehensive"]
 scan_type_var = tk.StringVar(value=scan_types[0])
-scan_dropdown = tk.OptionMenu(scan_frame, scan_type_var, *scan_types)
-scan_dropdown.grid(row=0, column=1, padx=10, pady=5)
+scan_type_menu = ttk.OptionMenu(scan_frame, scan_type_var, "XSS", *scan_types)
+scan_type_menu.grid(row=0, column=1, padx=10, pady=5)
 depth_label = tk.Label(scan_frame, text="Scan Depth:")
 depth_label.grid(row=1, column=0, padx=10, pady=5)
 depth_spinbox = tk.Spinbox(scan_frame, from_=1, to=10, width=5)
@@ -811,35 +807,6 @@ timeout_label = tk.Label(scan_frame, text="Timeout (seconds):")
 timeout_label.grid(row=2, column=0, padx=10, pady=5)
 timeout_spinbox = tk.Spinbox(scan_frame, from_=1, to=60, width=5)
 timeout_spinbox.grid(row=2, column=1, padx=10, pady=5)
-
-# Advanced XSS Options Frame
-xss_options_frame = tk.LabelFrame(scan_frame, text="Advanced XSS Options")
-xss_options_frame.grid(row=3, column=0, columnspan=2, padx=10, pady=5, sticky="ew")
-
-# DOM-based XSS
-dom_xss_var = tk.BooleanVar(value=False)
-tk.Checkbutton(xss_options_frame, text="DOM-based XSS Detection", variable=dom_xss_var).grid(row=0, column=0, padx=5, pady=2)
-
-# WAF Bypass
-waf_bypass_var = tk.BooleanVar(value=False)
-tk.Checkbutton(xss_options_frame, text="WAF Detection & Bypass", variable=waf_bypass_var).grid(row=0, column=1, padx=5, pady=2)
-
-# Custom Payload
-custom_payload_var = tk.BooleanVar(value=False)
-tk.Checkbutton(xss_options_frame, text="Custom Payload:", variable=custom_payload_var).grid(row=1, column=0, padx=5, pady=2)
-custom_payload_entry = tk.Entry(xss_options_frame, width=30)
-custom_payload_entry.grid(row=1, column=1, padx=5, pady=2)
-custom_payload_entry.insert(0, "<script>alert('test')</script>")
-
-# Blind XSS
-blind_xss_var = tk.BooleanVar(value=False)
-tk.Checkbutton(xss_options_frame, text="Blind XSS Detection", variable=blind_xss_var).grid(row=2, column=0, padx=5, pady=2)
-
-# Threads
-threads_label = tk.Label(xss_options_frame, text="Threads:")
-threads_label.grid(row=2, column=1, padx=5, pady=2)
-threads_spinbox = tk.Spinbox(xss_options_frame, from_=1, to=20, width=5)
-threads_spinbox.grid(row=2, column=2, padx=5, pady=2)
 
 # Start Scan Button
 start_button = tk.Button(input_frame, text="Start Scan", command=start_testing)
@@ -853,40 +820,56 @@ stop_button.grid(row=1, column=1, padx=10, pady=5)
 progress_bar = ttk.Progressbar(input_frame, orient="horizontal", length=300, mode="indeterminate")
 progress_bar.grid(row=1, column=2, padx=10, pady=5)
 
+# Exploit Listbox Section
+exploit_frame = tk.Frame(existing_tab)
+exploit_frame.pack(pady=10)
+exploit_label = tk.Label(exploit_frame, text="Select URL to Exploit:")
+exploit_label.grid(row=0, column=0, padx=10, pady=5)
+exploit_listbox = tk.Listbox(exploit_frame, width=80, height=5)
+exploit_listbox.grid(row=0, column=1, padx=10, pady=5)
+
 # Results Section
 results_frame = tk.Frame(existing_tab)
 results_frame.pack(pady=20)
 result_label = tk.Label(results_frame, text="Scan Results:")
 result_label.grid(row=0, column=0, padx=10, pady=5)
-result_table = ttk.Treeview(existing_tab, columns=("Vulnerability", "Severity", "Action"), show="headings")
+result_table = ttk.Treeview(results_frame, columns=("Vulnerability", "Severity", "Action"), show="headings", height=3)
+result_table.grid(row=1, column=0, columnspan=3, padx=5, pady=2, sticky="nsew")
 result_table.heading("Vulnerability", text="Vulnerability")
 result_table.heading("Severity", text="Severity")
 result_table.heading("Action", text="Action")
-result_table.column("Vulnerability", width=200)
-result_table.column("Severity", width=100)
-result_table.column("Action", width=200)
-result_table.pack(fill="both", expand=True)
+result_table.column("Vulnerability", width=300)
+result_table.column("Severity", width=150)
+result_table.column("Action", width=300)
+result_table.grid(row=2, column=0, columnspan=3, padx=5, pady=2, sticky="nsew")
 
 # Add a Text widget for detailed results
-result_textbox = tk.Text(results_frame, wrap=tk.WORD, height=10, width=80)
-result_textbox.grid(row=1, column=0, columnspan=3, padx=10, pady=10)
+result_textbox = tk.Text(results_frame, wrap=tk.WORD, height=5, width=80)
+result_textbox.grid(row=1, column=0, columnspan=3, padx=5, pady=5, sticky="nsew")
+
+results_frame.columnconfigure(0, weight=1)
+results_frame.rowconfigure(1, weight=1)
+results_frame.rowconfigure(2, weight=1)
+results_frame.pack(pady=20, fill="both", expand=True)
 
 # Configure green text tag
 result_textbox.tag_configure("green_text", foreground="green", font=("Courier", 12))
-
+result_textbox.tag_configure("auto_header", foreground="red", font=("Courier", 12, "bold"))
+result_textbox.tag_configure("error_text", foreground="red", font=("Courier", 12, "bold"))
 
 # Footer Section
 footer_frame = tk.Frame(existing_tab)
-footer_frame.pack(fill='x', pady=10)
+footer_frame.pack(fill='x', side='bottom', pady=5)
 contact_button = tk.Button(footer_frame, text="Contact Support", command=contact_support)
 contact_button.pack(side="left", padx=10)
 pdf_button = tk.Button(footer_frame, text="Export Results as PDF", command=export_to_pdf)
 pdf_button.pack(side="left", padx=10)
 # Add an Exploit button
-exploit_button = tk.Button(footer_frame, text="Exploit XSS", command=lambda: auto_exploit_xss(), bg="#ff9999", font=("Arial", 10, "bold"))
+exploit_button = tk.Button(footer_frame, text="Exploit XSS", command=lambda: auto_exploit_xss(), bg="#ff9999", font=("Arial", 10, "bold"), state=tk.DISABLED)
 exploit_button.pack(side="left", padx=10)
 copyright_button = tk.Button(footer_frame, text="Copyright", command=show_copyright)
 copyright_button.pack(side="right", padx=10)
+
 
 # Nmap Scan Tab Components
 nmap_url_frame = tk.Frame(nmap_tab)
@@ -904,7 +887,7 @@ nmap_clear_button = tk.Button(nmap_url_frame, text="Clear", command=lambda: nmap
 nmap_clear_button.pack(side="left", padx=10)
 
 # Dropdown for Nmap scan types
-nmap_scan_types = ["Quick Scan", "Full Scan", "OS Detection", "Service Version Detection", "Script Scan","VS", "Vulnerability Scan", "Custom Scan"]
+nmap_scan_types = ["Quick Scan", "Full Scan", "OS Detection", "Service Version Detection", "Script Scan", "VS", "Vulnerability Scan", "Custom Scan"]
 nmap_scan_type_var = tk.StringVar(value=nmap_scan_types[0])
 nmap_scan_dropdown = ttk.Combobox(nmap_url_frame, textvariable=nmap_scan_type_var, values=nmap_scan_types, state="readonly")
 nmap_scan_dropdown.pack(side="left", padx=10)
@@ -918,11 +901,9 @@ nmap_textbox.tag_configure("success_text", foreground="green", font=("Courier", 
 nmap_textbox.tag_configure("error_text", foreground="red", font=("Courier", 12, "bold"))
 nmap_textbox.tag_configure("auto_header", foreground="red", font=("Courier", 12, "bold"))
 
-
 # Button to Start Exploit 
 automate_button = tk.Button(nmap_tab, text="Automate", command=auto_exploit, bg="#ff9999", font=("Arial", 10, "bold"))
 automate_button.pack(side="left", pady=10, padx=10)
-
 
 # Button to start Nmap scan
 start_nmap_button = tk.Button(nmap_tab, text="Start Nmap Scan", command=lambda: run_nmap_scan(nmap_url_entry.get().strip(), nmap_scan_type_var.get()))
