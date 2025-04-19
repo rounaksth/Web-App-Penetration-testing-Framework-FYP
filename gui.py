@@ -15,11 +15,12 @@ import json
 from tkinter import scrolledtext
 import webbrowser
 
-# Global variable to track the running process
+# Global variables to track the running processes
 running_process = None
 nmap_process = None
 subjack_process = None
-process_lock = threading.Lock()  # Lock for synchronizing access to running_process and nmap_process
+nuclei_process = None  # Added for Nuclei scan
+process_lock = threading.Lock()  # Lock for synchronizing access to running processes
 
 # Configure logging
 logging.basicConfig(filename="app.log", level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -739,6 +740,126 @@ def export_subjack_results():
             file.write(results)
         messagebox.showinfo("Export Successful", f"Subjack results exported to {file_path}")
 
+# Function to run Nuclei scan
+def run_nuclei_scan():
+    target_url = nuclei_entry.get().strip()
+    if not target_url or target_url == "Enter target URL here":
+        messagebox.showerror("Error", "Please enter a valid target URL.")
+        return
+
+    # Clear previous results
+    nuclei_textbox.delete("1.0", tk.END)
+
+    # Check if Nuclei is installed
+    try:
+        subprocess.run(["nuclei", "-version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+    except FileNotFoundError:
+        nuclei_textbox.insert(tk.END, "Error: Nuclei not found. Please ensure it's installed and in your PATH.\n")
+        nuclei_textbox.insert(tk.END, "Installation: go install -v github.com/projectdiscovery/nuclei/v2/cmd/nuclei@latest\n")
+        return
+
+    # Disable the Start button and enable the Stop button
+    start_nuclei_button.config(state=tk.DISABLED)
+    stop_nuclei_button.config(state=tk.NORMAL)
+
+    # Prepare command to run via pentest.sh
+    script_path = "./pentest.sh"
+    if not os.path.exists(script_path) or not os.access(script_path, os.X_OK):
+        nuclei_textbox.insert(tk.END, "Error: Backend script not found or not executable.\n")
+        start_nuclei_button.config(state=tk.NORMAL)
+        stop_nuclei_button.config(state=tk.DISABLED)
+        return
+
+    command = ["bash", script_path, target_url, "nuclei"]
+    # Debug: Log the command being executed
+    logging.info(f"Executing command: {' '.join(command)}")
+
+    # Run Nuclei scan
+    global nuclei_process
+    with process_lock:
+        nuclei_process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+    # Function to read and display real-time output
+    def read_output():
+        global nuclei_process
+
+        # Read output from pentest.sh
+        while True:
+            with process_lock:
+                if nuclei_process is None:
+                    break
+
+            output = nuclei_process.stdout.readline()
+            if output == '' and nuclei_process.poll() is not None:
+                break
+            if output:
+                nuclei_textbox.insert(tk.END, output, "green_text")
+                nuclei_textbox.see(tk.END)
+
+        with process_lock:
+            if nuclei_process is not None:
+                nuclei_process.stdout.close()
+                nuclei_process.stderr.close()  # Ensure stderr is closed
+                nuclei_process.wait()
+
+        # Re-enable the Start button and disable the Stop button
+        start_nuclei_button.config(state=tk.NORMAL)
+        stop_nuclei_button.config(state=tk.DISABLED)
+
+        with process_lock:
+            if nuclei_process is not None:
+                returncode = nuclei_process.returncode
+                logging.info(f"Nuclei process return code: {returncode}")
+                if returncode == 0:
+                    nuclei_textbox.insert(tk.END, "\nNuclei scan completed successfully!\n")
+                    # Check for simple_nuclei_output.txt and display simplified results
+                    if os.path.exists("simple_nuclei_output.txt"):
+                        with open("simple_nuclei_output.txt", "r") as f:
+                            simple_results = f.read()
+                            if simple_results.strip():
+                                nuclei_textbox.insert(tk.END, "\n=== Simplified Results ===\n")
+                                nuclei_textbox.insert(tk.END, simple_results + "\n")
+                            else:
+                                nuclei_textbox.insert(tk.END, "\nNo vulnerabilities found.\n")
+                    else:
+                        nuclei_textbox.insert(tk.END, "\nError: simple_nuclei_output.txt not found.\n")
+                else:
+                    error = nuclei_process.stderr.read() if nuclei_process else "Nuclei process was not started."
+                    nuclei_textbox.insert(tk.END, f"\nError: Script failed with return code {returncode}. Details: {error}\n", "error_text")
+
+    # Start reading output in a separate thread
+    threading.Thread(target=read_output, daemon=True).start()
+
+# Function to stop Nuclei scan
+def stop_nuclei_scan():
+    global nuclei_process
+
+    if nuclei_process:
+        with process_lock:
+            nuclei_process.terminate()
+            nuclei_process = None
+        nuclei_textbox.insert(tk.END, "\nNuclei scan stopped by user.\n")
+        start_nuclei_button.config(state=tk.NORMAL)
+        stop_nuclei_button.config(state=tk.DISABLED)
+
+# Function to export Nuclei results
+def export_nuclei_results():
+    results = nuclei_textbox.get("1.0", tk.END)
+    if not results.strip():
+        messagebox.showwarning("Export Failed", "No Nuclei results to export.")
+        return
+
+    file_path = filedialog.asksaveasfilename(
+        defaultextension=".txt",
+        filetypes=[("Text Files", "*.txt"), ("All Files", "*.*")]
+    )
+
+    if file_path:
+        with open(file_path, "w") as file:
+            file.write(results)
+        messagebox.showinfo("Export Successful", f"Nuclei results exported to {file_path}")
+
+
 # Create the main window
 root = tk.Tk()
 root.title("Web Application Penetration Testing Framework")
@@ -753,11 +874,19 @@ notebook.pack(fill="both", expand=True)
 existing_tab = ttk.Frame(notebook)
 notebook.add(existing_tab, text="Scan Results")
 
-# Add a new tab for Nmap scans
+# Add a tab for Nmap scans
 nmap_tab = ttk.Frame(notebook)
 notebook.add(nmap_tab, text="Nmap Scan")
 
-# Header Section
+# Add a tab for Subjack
+subjack_tab = ttk.Frame(notebook)
+notebook.add(subjack_tab, text="Subdomain Takeover")
+
+# Add a tab for Nuclei scans
+nuclei_tab = ttk.Frame(notebook)
+notebook.add(nuclei_tab, text="Nuclei Scan")
+
+# Header Section (Scan Results Tab)
 header_frame = tk.Frame(existing_tab)
 header_frame.pack(fill='x', pady=10)
 
@@ -778,7 +907,7 @@ settings_button.pack(side="right", padx=10)
 help_button = tk.Button(header_frame, text="Help", command=open_help)
 help_button.pack(side="right", padx=10)
 
-# Input Fields Section
+# Input Fields Section (Scan Results Tab)
 input_frame = tk.Frame(existing_tab)
 input_frame.pack(pady=20)
 url_label = tk.Label(input_frame, text="Target URL:")
@@ -790,7 +919,7 @@ url_entry.bind("<FocusIn>", on_url_entry_click)
 clear_button = tk.Button(input_frame, text="Clear", command=lambda: url_entry.delete(0, tk.END))
 clear_button.grid(row=0, column=2, padx=10, pady=5)
 
-# Scan Controls Section
+# Scan Controls Section (Scan Results Tab)
 scan_frame = tk.Frame(existing_tab)
 scan_frame.pack(pady=20)
 scan_label = tk.Label(scan_frame, text="Select Scan Type:")
@@ -808,19 +937,19 @@ timeout_label.grid(row=2, column=0, padx=10, pady=5)
 timeout_spinbox = tk.Spinbox(scan_frame, from_=1, to=60, width=5)
 timeout_spinbox.grid(row=2, column=1, padx=10, pady=5)
 
-# Start Scan Button
+# Start Scan Button (Scan Results Tab)
 start_button = tk.Button(input_frame, text="Start Scan", command=start_testing)
 start_button.grid(row=1, column=0, padx=10, pady=5)
 
-# Stop Scan Button
+# Stop Scan Button (Scan Results Tab)
 stop_button = tk.Button(input_frame, text="Stop Scan", command=stop_scan, state=tk.DISABLED)
 stop_button.grid(row=1, column=1, padx=10, pady=5)
 
-# Progress Bar
+# Progress Bar (Scan Results Tab)
 progress_bar = ttk.Progressbar(input_frame, orient="horizontal", length=300, mode="indeterminate")
 progress_bar.grid(row=1, column=2, padx=10, pady=5)
 
-# Exploit Listbox Section
+# Exploit Listbox Section (Scan Results Tab)
 exploit_frame = tk.Frame(existing_tab)
 exploit_frame.pack(pady=10)
 exploit_label = tk.Label(exploit_frame, text="Select URL to Exploit:")
@@ -828,7 +957,7 @@ exploit_label.grid(row=0, column=0, padx=10, pady=5)
 exploit_listbox = tk.Listbox(exploit_frame, width=80, height=5)
 exploit_listbox.grid(row=0, column=1, padx=10, pady=5)
 
-# Results Section
+# Results Section (Scan Results Tab)
 results_frame = tk.Frame(existing_tab)
 results_frame.pack(pady=20)
 result_label = tk.Label(results_frame, text="Scan Results:")
@@ -843,7 +972,7 @@ result_table.column("Severity", width=150)
 result_table.column("Action", width=300)
 result_table.grid(row=2, column=0, columnspan=3, padx=5, pady=2, sticky="nsew")
 
-# Add a Text widget for detailed results
+# Add a Text widget for detailed results (Scan Results Tab)
 result_textbox = tk.Text(results_frame, wrap=tk.WORD, height=5, width=80)
 result_textbox.grid(row=1, column=0, columnspan=3, padx=5, pady=5, sticky="nsew")
 
@@ -852,12 +981,12 @@ results_frame.rowconfigure(1, weight=1)
 results_frame.rowconfigure(2, weight=1)
 results_frame.pack(pady=20, fill="both", expand=True)
 
-# Configure green text tag
+# Configure green text tag (Scan Results Tab)
 result_textbox.tag_configure("green_text", foreground="green", font=("Courier", 12))
 result_textbox.tag_configure("auto_header", foreground="red", font=("Courier", 12, "bold"))
 result_textbox.tag_configure("error_text", foreground="red", font=("Courier", 12, "bold"))
 
-# Footer Section
+# Footer Section (Scan Results Tab)
 footer_frame = tk.Frame(existing_tab)
 footer_frame.pack(fill='x', side='bottom', pady=5)
 contact_button = tk.Button(footer_frame, text="Contact Support", command=contact_support)
@@ -869,7 +998,6 @@ exploit_button = tk.Button(footer_frame, text="Exploit XSS", command=lambda: aut
 exploit_button.pack(side="left", padx=10)
 copyright_button = tk.Button(footer_frame, text="Copyright", command=show_copyright)
 copyright_button.pack(side="right", padx=10)
-
 
 # Nmap Scan Tab Components
 nmap_url_frame = tk.Frame(nmap_tab)
@@ -895,13 +1023,13 @@ nmap_scan_dropdown.pack(side="left", padx=10)
 nmap_textbox = tk.Text(nmap_tab, wrap=tk.WORD, height=20, width=80, font=("Courier", 12))
 nmap_textbox.pack(fill="both", expand=True, padx=10, pady=10)
 
-# Configure text tags for different colors and sizes
+# Configure text tags for different colors and sizes (Nmap Tab)
 nmap_textbox.tag_configure("green_text", foreground="green", font=("Courier", 12))
 nmap_textbox.tag_configure("success_text", foreground="green", font=("Courier", 12, "bold"))
 nmap_textbox.tag_configure("error_text", foreground="red", font=("Courier", 12, "bold"))
 nmap_textbox.tag_configure("auto_header", foreground="red", font=("Courier", 12, "bold"))
 
-# Button to Start Exploit 
+# Button to Start Exploit (Nmap Tab)
 automate_button = tk.Button(nmap_tab, text="Automate", command=auto_exploit, bg="#ff9999", font=("Arial", 10, "bold"))
 automate_button.pack(side="left", pady=10, padx=10)
 
@@ -917,10 +1045,6 @@ stop_nmap_button.pack(pady=10)
 export_nmap_button = tk.Button(nmap_tab, text="Export Nmap Results", command=export_nmap_results)
 export_nmap_button.pack(pady=10)
 
-# Create a tab for Subjack
-subjack_tab = ttk.Frame(notebook)
-notebook.add(subjack_tab, text="Subdomain Takeover")
-
 # Subjack Tab Components
 subjack_frame = tk.Frame(subjack_tab)
 subjack_frame.pack(fill='x', pady=10)
@@ -933,7 +1057,7 @@ subjack_entry.grid(row=0, column=1, padx=10, pady=5)
 subjack_entry.insert(0, "Enter target domain here")
 subjack_entry.bind("<FocusIn>", lambda event: subjack_entry.delete(0, tk.END) if subjack_entry.get() == "Enter target domain here" else None)
 
-# Options frame
+# Options frame (Subjack Tab)
 subjack_options_frame = tk.Frame(subjack_tab)
 subjack_options_frame.pack(fill='x', pady=5)
 
@@ -956,14 +1080,14 @@ subjack_timeout_check.grid(row=1, column=0, padx=5, pady=5)
 subjack_timeout_spinbox = tk.Spinbox(subjack_options_frame, from_=1, to=60, width=5)
 subjack_timeout_spinbox.grid(row=1, column=1, padx=5, pady=5)
 
-# Results display
+# Results display (Subjack Tab)
 subjack_textbox = scrolledtext.ScrolledText(subjack_tab, wrap=tk.WORD, height=20, width=80)
 subjack_textbox.pack(fill="both", expand=True, padx=10, pady=10)
 
-# Configure text tags
+# Configure text tags (Subjack Tab)
 subjack_textbox.tag_configure("vulnerable_text", foreground="red", font=("Courier", 12, "bold"))
 
-# Control buttons
+# Control buttons (Subjack Tab)
 subjack_button_frame = tk.Frame(subjack_tab)
 subjack_button_frame.pack(fill='x', pady=10)
 
@@ -975,6 +1099,42 @@ stop_subjack_button.pack(side="left", padx=10)
 
 export_subjack_button = tk.Button(subjack_button_frame, text="Export Results", command=export_subjack_results)
 export_subjack_button.pack(side="left", padx=10)
+
+# Nuclei Scan Tab Components
+nuclei_frame = tk.Frame(nuclei_tab)
+nuclei_frame.pack(fill='x', pady=10)
+
+nuclei_label = tk.Label(nuclei_frame, text="Target URL for Nuclei Scan:")
+nuclei_label.pack(side="left", padx=10)
+
+nuclei_entry = tk.Entry(nuclei_frame, width=50)
+nuclei_entry.pack(side="left", padx=10)
+nuclei_entry.insert(0, "Enter target URL here")
+nuclei_entry.bind("<FocusIn>", lambda event: nuclei_entry.delete(0, tk.END))
+
+nuclei_clear_button = tk.Button(nuclei_frame, text="Clear", command=lambda: nuclei_entry.delete(0, tk.END))
+nuclei_clear_button.pack(side="left", padx=10)
+
+# Results display (Nuclei Tab)
+nuclei_textbox = scrolledtext.ScrolledText(nuclei_tab, wrap=tk.WORD, height=20, width=80)
+nuclei_textbox.pack(fill="both", expand=True, padx=10, pady=10)
+
+# Configure text tags (Nuclei Tab)
+nuclei_textbox.tag_configure("green_text", foreground="green", font=("Courier", 12))
+nuclei_textbox.tag_configure("error_text", foreground="red", font=("Courier", 12, "bold"))
+
+# Control buttons (Nuclei Tab)
+nuclei_button_frame = tk.Frame(nuclei_tab)
+nuclei_button_frame.pack(fill='x', pady=10)
+
+start_nuclei_button = tk.Button(nuclei_button_frame, text="Start Scan", command=run_nuclei_scan)
+start_nuclei_button.pack(side="left", padx=10)
+
+stop_nuclei_button = tk.Button(nuclei_button_frame, text="Stop Scan", command=stop_nuclei_scan, state=tk.DISABLED)
+stop_nuclei_button.pack(side="left", padx=10)
+
+export_nuclei_button = tk.Button(nuclei_button_frame, text="Export Results", command=export_nuclei_results)
+export_nuclei_button.pack(side="left", padx=10)
 
 # Queue for thread-safe communication
 output_queue = queue.Queue()
